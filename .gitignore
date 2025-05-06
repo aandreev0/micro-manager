@@ -68,7 +68,7 @@ test-reports/
 /doxygen/out/
 /dependencies/
 /dist/
-/stage/
+/stage*
 /symbols/
 
 # Testing

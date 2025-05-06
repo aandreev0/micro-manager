@@ -28,7 +28,7 @@
 	<!-- Unlike the intermediates and products directory, staging can be
 	     configuration/architecture-specific even for platform-independent
 	     (e.g. Java) components. -->
-	<property name="mm.stagedir" location="${mm.basedir}/stage"/>
+	<property name="mm.stagedir" location="${mm.basedir}/stage-channel-saving-and-PCZT-order"/>
 	<property name="mm.installdir" location="${mm.stagedir}/${mm.configuration}/${mm.architecture}"/>
 
 	<!-- Installers -->
