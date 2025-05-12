@@ -651,10 +651,10 @@ public final class StageControlFrame extends JFrame {
       work_button.addActionListener((ActionEvent e) -> {
          try{
             int response = JOptionPane.showConfirmDialog(null,
-                  "Move stage " + zDriveSelect_[idx].getSelectedItem() + " to working position?",
+                  "Move stage " + zDriveSelect_[idx].getSelectedItem() + " to working position @ 15mm?",
                   "Move stage to working position?", JOptionPane.YES_NO_OPTION);
             if (response == JOptionPane.YES_OPTION) {
-               setRelativeStagePosition(20000 + -1 * core_.getPosition((String) zDriveSelect_[idx].getSelectedItem()) , idx);
+               setRelativeStagePosition(15000 + -1 * core_.getPosition((String) zDriveSelect_[idx].getSelectedItem()) , idx);
                zDriveActiveButtons_[idx].setSelected(true);
             }
          }catch(Exception ex){
