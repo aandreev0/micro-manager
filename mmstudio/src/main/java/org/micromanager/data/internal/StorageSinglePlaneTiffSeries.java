@@ -93,7 +93,7 @@ public final class StorageSinglePlaneTiffSeries implements Storage {
    private Coords maxIndices_;
    private boolean isMultiPosition_;
    private Image firstImage_;
-
+   private boolean _is_album;
    /**
     * Implements storing single plane TIff series.
     *
@@ -124,7 +124,7 @@ public final class StorageSinglePlaneTiffSeries implements Storage {
       amLoading_ = false;
       coordsIndexedMissingC_ = new HashMap<>();
       isMultiPosition_ = true;
-
+      _is_album = false; // HOTFIX Album doesnt really know about channels and gets confused
       // Note: this will throw an error if there is no existing data set
       if (!isDatasetWritable_) {
          openExistingDataSet();
@@ -134,8 +134,16 @@ public final class StorageSinglePlaneTiffSeries implements Storage {
    @Override
    public void putImage(Image image) {
       ImageSizeChecker.checkImageSizeInSummary(summaryMetadata_, image);
+      String channel_name = "album";
+      try {
+         if (!_is_album){ // when saving album the metadata is not finalized for first image
+         channel_name = store_.getSummaryMetadata().getChannelNames()[image.getCoords().getChannel()];
+         }
+      } catch (Exception ex) {
+         ReportingUtils.logError(ex);
+         _is_album = true; // if album then dont save into channel folders
+      }
 	  
-	  String channel_name = store_.getSummaryMetadata().getChannelNames()[image.getCoords().getChannel()];
       // Require images to only have time/channel/z/position axes.
       for (String axis : image.getCoords().getAxes()) {
          if (!ALLOWED_AXES.contains(axis)) {

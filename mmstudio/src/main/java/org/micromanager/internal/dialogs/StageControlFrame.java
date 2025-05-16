@@ -670,7 +670,7 @@ public final class StageControlFrame extends JFrame {
          result.add(work_button, "alignx center, growx");
          result.add(new JLabel(), "height 30!");
       }else{
-         result.add(new JLabel(), "height 50!");
+         result.add(new JLabel(), "height 75!");
       }
       
 
