@@ -134,7 +134,7 @@ public final class StorageSinglePlaneTiffSeries implements Storage {
    @Override
    public void putImage(Image image) {
       ImageSizeChecker.checkImageSizeInSummary(summaryMetadata_, image);
-      String channel_name = "album";
+      String channel_name = ".";
       try {
          if (!_is_album){ // when saving album the metadata is not finalized for first image
          channel_name = store_.getSummaryMetadata().getChannelNames()[image.getCoords().getChannel()];
