@@ -38,6 +38,7 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JTextField;
+import java.text.SimpleDateFormat;
 import net.miginfocom.swing.MigLayout;
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.ChartFrame;
@@ -47,6 +48,7 @@ import org.jfree.chart.plot.XYPlot;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
+import org.jfree.chart.axis.DateAxis;
 import mmcorej.CMMCore;
 
 import org.micromanager.Studio;
@@ -70,7 +72,7 @@ public class RTTempFrame extends JFrame {
    private ChartFrame graphFrame_ = null;
    private double lastElapsedTimeMs_ = 0.0;
    // autoStart on new active window
-   private boolean autoStart_;
+   private boolean autoStart_ = true;
    // acquisition plot start on first image delivered.
    private boolean delayedStart_ = false;
    // Ratio plot memory
@@ -112,7 +114,6 @@ public class RTTempFrame extends JFrame {
       minPeriod_ = prefs.getInteger(MIN_PERIOD, 10);
       maxPoints_ = prefs.getInteger(MAX_POINTS, 200);
       ratio_ = prefs.getBoolean(RATIO, false);
-      autoStart_ = prefs.getBoolean(AUTOSTART, false);
 
       if (RThandler_ == null) {
          RThandler_ = this;
@@ -140,7 +141,7 @@ public class RTTempFrame extends JFrame {
       //super.add(managerButton, "split, span");
 
       // Create a graph and start plotting, or tell user what's missing for so doing
-      JButton startButton = new JButton("Plot");
+      JButton startButton = new JButton("Start Temperature plot");
       startButton.addActionListener(e -> {
          // Active window ?
          DataViewer viewer = studio.displays().getActiveDataViewer();
@@ -193,7 +194,7 @@ public class RTTempFrame extends JFrame {
             prefs.putInteger(MAX_POINTS, maxPoints_);
             ratio_ = ratioPlot.isSelected();
             prefs.putBoolean(RATIO, ratio_);
-            autoStart_ = autoPlot.isSelected();
+            //autoStart_ = autoPlot.isSelected();
             prefs.putBoolean(AUTOSTART, autoStart_);
          }
       });
@@ -215,10 +216,6 @@ public class RTTempFrame extends JFrame {
 
    @Subscribe
    public void onNewAcquisition(AcquisitionStartedEvent event) {
-      if (!autoStart_ || manager_ == null) {
-         return;
-      }
-     
       title_.setText("Set");
       delayedStart_ = true;
       event.getDatastore().registerForEvents(RThandler_);
@@ -226,9 +223,7 @@ public class RTTempFrame extends JFrame {
 
    @Subscribe
    public void onLiveMode(LiveModeEvent event) {
-      if (!autoStart_ || manager_ == null) {
-         return;
-      }
+
       if (!event.isOn()) {
          return;
       }
@@ -265,7 +260,7 @@ public class RTTempFrame extends JFrame {
          graphFrame_.dispose();
       }
       graphFrame_ = plotData(plotmode,
-            dataset, "Time(sec)", "Value", plots_, backgroundEq_, 100, 100);
+            dataset, "Time, sec", "Temperature, deg C", plots_, backgroundEq_, 100, 100);
       graphFrame_.addWindowListener(new WindowAdapter() {
          public void windowClosing(WindowEvent e) {
             graphFrame_ = null;
@@ -289,15 +284,7 @@ public class RTTempFrame extends JFrame {
    private void processImage(DataProvider dp, Image image) {
       // Kind of ugly way to autostart on new acquisition, new acquisition event seems too early
       if (delayedStart_) {
-         dataProvider_ = dp;
-         channels_ = dataProvider_.getSummaryMetadata().getChannelNameList().size();
          setupPlot();
-      }
-      if (!dp.equals(dataProvider_)) {
-         return;
-      }
-      if (graphFrame_ == null) {
-         return;
       }
       Double elapsedTimeMs = 10.0;
       elapsedTimeMs = image.getMetadata().getElapsedTimeMs(elapsedTimeMs);
@@ -307,22 +294,12 @@ public class RTTempFrame extends JFrame {
       // do not process images at more than 100 Hz
       if (missing_ > 0 || elapsedTimeMs - lastElapsedTimeMs_ >= minPeriod_) {
          lastElapsedTimeMs_ = elapsedTimeMs;
-         int channel = image.getCoords().getChannel(); // 0..(n-1)
-         if (channel >= channels_) {
-            return;
-         }
-         if (channel == 0) {
-            missing_ = channels_ - 1;
-         } else {
-            missing_--;
-         }
 
-         title_.setText("Data should be on the plot.(" + channel + "/" + imagesReceived_ + ")");
+         title_.setText("Data should be on the plot.");
 
          ImageProcessor processor = studio_.data().ij().createProcessor(image);
 
          double v = 0;
-         double bg = 0;
 
          int idx = 0; // follow series order with background gaps
          for (int i = 0; i < 3; i++) {
@@ -332,7 +309,7 @@ public class RTTempFrame extends JFrame {
             } catch (Exception e) {
                e.printStackTrace();
             }
-            data_[0 + idx * plots_].add((double) elapsedTimeMs/1000, v, true);
+            data_[0 + idx * plots_].add((double) System.currentTimeMillis(), v, true);
             idx++; // Background ROIs do not have data series, just one at the end
          
          }
@@ -371,11 +348,13 @@ public class RTTempFrame extends JFrame {
             false // Configure chart to generate URLs?
       );
       XYPlot plot = (XYPlot) chart.getPlot();
+
+      DateAxis dateAxis = new DateAxis();
+      dateAxis.setDateFormatOverride(new SimpleDateFormat("HH:mm:ss")); 
+      plot.setDomainAxis(dateAxis);
+
       int series = dataset.getSeriesCount();
-      // Specific background series treatment
-      if (bg >= 0) {
-         series -= plots;
-      }
+
       plot.setBackgroundPaint(Color.white);
       plot.setRangeGridlinePaint(Color.lightGray);
       XYLineAndShapeRenderer renderer = (XYLineAndShapeRenderer) plot.getRenderer();
@@ -402,25 +381,7 @@ public class RTTempFrame extends JFrame {
             );
          }
       }
-      if (bg >= 0) {
-         renderer.setSeriesPaint(series, Color.lightGray);
-         renderer.setSeriesShape(series, circle, false);
-         renderer.setSeriesLinesVisible(series, true);
-         renderer.setSeriesStroke(
-               series, new BasicStroke(
-                     2.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
-                     1.0f, new float[] {1.0f, 4.0f}, 0.0f));
-         for (int p = 1; p < plots; p++) {
-            renderer.setSeriesPaint(series + 1, Color.lightGray);
-            renderer.setSeriesShape(series + 1, circle, false);
-            renderer.setSeriesLinesVisible(series + p, true);
-            renderer.setSeriesStroke(
-                  series + 1, new BasicStroke(
-                        2.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
-                        1.0f, new float[] {1.0f, (float) (4 * (p + 1))}, 0.0f));
-         }
-      }
-
+      
       MMChartFrame graphFrame = new MMChartFrame(title, chart, dataset, studio_, dataProvider_,
             this);
       graphFrame.modifyPopupMenu();
