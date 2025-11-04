@@ -45,13 +45,25 @@ public interface DisplayManager extends EventPublisher {
    Datastore show(Image image);
 
    /**
-    * Retrieve a DisplaySettings holding the values the user has saved as their
-    * default values.
+    * This was mean to retrieve a DisplaySettings holding the values the
+    * user had saved as their default values. Since there is no UI to save
+    * settings as the default, this function was never used in the UI
     *
-    * @return The DisplaySettings as of the last time the user clicked the
-    *     "Set as default" button in the Settings tab of a DisplayWindow.
+    * @return Blank  DisplaySettings
+    * @deprecated use displaySettingsBuilder() instead
     */
+   @Deprecated
    DisplaySettings getStandardDisplaySettings();
+
+   /**
+    * Restore DisplaySettings from the UserProfile using the
+    * profile key. Returns null if the profile does not contain the requested DisplaySettings.
+    *
+    * @param profileKey The key in the UserProfile to use for the DisplaySettings.
+    * @return DisplaySettings with the values from the UserProfile or null if
+    *         the UserProfile did not contain DisplaySettings under the provided key.
+    */
+   DisplaySettings displaySettingsFromProfile(String profileKey);
 
    /**
     * Generate a "blank" DisplaySettings.Builder with all null values.
@@ -154,6 +166,22 @@ public interface DisplayManager extends EventPublisher {
     */
    DisplayWindow createDisplay(DataProvider dataProvider,
                                DisplayWindowControlsFactory factory);
+
+   /**
+    * Create a new DisplayWindow for the specified DataProvider and return it.
+    * This version allows you to specify the DisplaySettings to use for the
+    * DisplayWindow. Set the DisplayWindowControlsFactory to null if you do not
+    * use custom controls.
+    *
+    * @param provider        The DataProvider whose data should be displayed.
+    * @param factory         A ControlsFactory used to create custom controls for
+    *                        the DisplayWindow. May be null.
+    * @param displaySettings The initial DisplaySettings to use for the DisplayWindow.
+    * @return The created DisplayWindow.
+    */
+   DisplayWindow createDisplay(DataProvider provider,
+                                      DisplayWindowControlsFactory factory,
+                                      DisplaySettings displaySettings);
 
    /**
     * Create a new Inspector window that shows information for the specified

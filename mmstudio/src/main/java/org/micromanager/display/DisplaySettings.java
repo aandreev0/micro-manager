@@ -20,8 +20,10 @@
 
 package org.micromanager.display;
 
+
 import java.awt.Color;
 import java.util.List;
+
 
 /**
  * This class defines the parameters that control how a given DisplayWindow
@@ -255,7 +257,41 @@ public interface DisplaySettings {
          int channel, int component, ComponentDisplaySettings settings);
 
 
-   // TODO Add static builder() in Java 8
+
+
+
+   /**
+    * ColorMode enums.
+    */
+   enum ColorMode {
+      // TODO Integer indices should be implementation detail of file format
+      COLOR(0), COMPOSITE(1), GRAYSCALE(2), HIGHLIGHT_LIMITS(3), FIRE(4),
+      RED_HOT(5), @Deprecated SPECTRUM(6);
+
+      private final int index_;
+
+      ColorMode(int index) {
+         index_ = index;
+      }
+
+      @Deprecated
+      public int getIndex() {
+         return index_;
+      }
+
+      @Deprecated
+      public static ColorMode fromInt(int index) {
+         for (ColorMode mode : ColorMode.values()) {
+            if (mode.getIndex() == index) {
+               return mode;
+            }
+         }
+         return null;
+      }
+   }
+
+
+   //////////////////////////////// Deprecated methods below ////////////////////////////////
 
 
    /**
@@ -564,35 +600,6 @@ public interface DisplaySettings {
    @Deprecated
    Boolean getSafeIsVisible(int index, Boolean defaultVal);
 
-   /**
-    * ColorMode enums.
-    */
-   enum ColorMode {
-      // TODO Integer indices should be implementation detail of file format
-      COLOR(0), COMPOSITE(1), GRAYSCALE(2), HIGHLIGHT_LIMITS(3), FIRE(4),
-      RED_HOT(5), @Deprecated SPECTRUM(6);
-
-      private final int index_;
-
-      ColorMode(int index) {
-         index_ = index;
-      }
-
-      @Deprecated
-      public int getIndex() {
-         return index_;
-      }
-
-      @Deprecated
-      public static ColorMode fromInt(int index) {
-         for (ColorMode mode : ColorMode.values()) {
-            if (mode.getIndex() == index) {
-               return mode;
-            }
-         }
-         return null;
-      }
-   }
 
    /**
     * The index into the "Display mode" control.

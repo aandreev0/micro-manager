@@ -60,9 +60,9 @@ import org.micromanager.data.internal.ndtiff.NDTiffAdapter;
 import org.micromanager.display.DataViewer;
 import org.micromanager.display.DataViewerListener;
 import org.micromanager.display.DisplaySettings;
-import org.micromanager.display.DisplaySettingsChangedEvent;
 import org.micromanager.display.DisplayWindow;
 import org.micromanager.display.DisplayWindowControlsFactory;
+import org.micromanager.display.internal.DefaultDisplayManager;
 import org.micromanager.display.internal.DefaultDisplaySettings;
 import org.micromanager.display.internal.RememberedDisplaySettings;
 import org.micromanager.internal.propertymap.NonPropertyMapJSONFormats;
@@ -181,7 +181,6 @@ public final class MMAcquisition extends DataViewerListener {
 
       if (show_) {
          studio_.displays().manage(store_);
-         display_ = studio_.displays().createDisplay(store_, makeControlsFactory());
 
          // Color handling is a problem. They are no longer part of the summary
          // metadata.  However, they clearly need to be stored
@@ -192,44 +191,44 @@ public final class MMAcquisition extends DataViewerListener {
          // settings here seems clumsy, but I am not sure where else this belongs
 
          // Use settings of last closed acquisition viewer
-         DisplaySettings dsTmp = DefaultDisplaySettings.restoreFromProfile(
-                  studio_.profile(), PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
-
-         if (dsTmp == null) {
-            dsTmp = DefaultDisplaySettings.getStandardSettings(
-                     PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
+         DisplaySettings.Builder displaySettingsBuilder = null;
+         DisplaySettings tmpDisplaySettings =
+               studio_.displays().displaySettingsFromProfile(
+                        PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
+         if (tmpDisplaySettings != null) {
+            displaySettingsBuilder = tmpDisplaySettings.copyBuilder();
+         }
+         if (displaySettingsBuilder == null) {
+            displaySettingsBuilder = DefaultDisplaySettings.builder();
          }
 
-         //if (summaryMetadata.has("ChColors")) {
          final int nrChannels = store_.getSummaryMetadata().getChannelNameList().size();
-         if (nrChannels > 0) {
-            //JSONArray chColors = summaryMetadata.getJSONArray("ChColors");
-
-            DisplaySettings.Builder displaySettingsBuilder
-                     = dsTmp.copyBuilder();
-
-            // the do-while loop is a way to set display settings in a thread
-            // safe way.  See docs to compareAndSetDisplaySettings.
-            do {
-               if (nrChannels == 1) {
-                  displaySettingsBuilder.colorModeGrayscale();
-               } else {
-                  displaySettingsBuilder.colorModeComposite();
-               }
-               for (int channelIndex = 0; channelIndex < nrChannels
-                        && channelIndex < acquisitionSettings.channels().size(); channelIndex++) {
-                  displaySettingsBuilder.channel(channelIndex,
-                           RememberedDisplaySettings.loadChannel(studio_,
+         if (nrChannels > 0) { // I believe this will always be true, but just in case...
+            if (nrChannels == 1) {
+               displaySettingsBuilder.colorModeGrayscale();
+            } else {
+               displaySettingsBuilder.colorModeComposite();
+            }
+            for (int channelIndex = 0; channelIndex < nrChannels; channelIndex++) {
+               displaySettingsBuilder.channel(channelIndex,
+                        RememberedDisplaySettings.loadChannel(studio_,
                                  store_.getSummaryMetadata().getChannelGroup(),
                                  store_.getSummaryMetadata().getChannelNameList().get(channelIndex),
-                                 acquisitionSettings.channels().get(channelIndex).color()));
-               }
-            } while (!display_.compareAndSetDisplaySettings(
-                     display_.getDisplaySettings(), displaySettingsBuilder.build()));
+                                 channelIndex < acquisitionSettings.channels().size()
+                                          ? acquisitionSettings.channels().get(channelIndex).color()
+                                          : null));
+            }
          } else {
-            display_.compareAndSetDisplaySettings(
-                     display_.getDisplaySettings(), dsTmp);
+            int tmpNrChannels = summaryMetadata.getChannelNameList().size();
+            studio_.logs().logError("nrChannel in MMAcquisition was unexpectedly zero");
+
          }
+
+         display_ = studio_.displays().createDisplay(store_,
+                  makeControlsFactory(),
+                  displaySettingsBuilder.build());
+         display_.setWindowPositionKey(DefaultDisplayManager.MDA_DISPLAY);
+         display_.setDisplaySettingsProfileKey(PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
 
          // It is a bit funny that there are listeners and events
          // The listener provides the canClose functionality (which needs to be
@@ -299,10 +298,8 @@ public final class MMAcquisition extends DataViewerListener {
       // NS 20241128: I do not understand the logic here.
       // If this is not out Datastore or viewer, why deal with it?
       if (callbacks_.getAcquisitionDatastore() != viewer.getDataProvider()) {
-         if (display_.getDisplaySettings() instanceof DefaultDisplaySettings) {
-            DefaultDisplaySettings ds = (DefaultDisplaySettings) display_.getDisplaySettings();
-            ds.saveToProfile(studio_.profile(), PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
-         }
+         studio_.logs()
+               .logError("MMAcquisition: received canCloseViewer with unknown store");
          display_.removeListener(this);
          display_ = null;
          return true;
@@ -310,11 +307,6 @@ public final class MMAcquisition extends DataViewerListener {
       boolean result = callbacks_.abortRequest();
       if (result) {
          if (viewer instanceof DisplayWindow && viewer.equals(display_)) {
-            // saving settings (again) may not be needed
-            if (display_.getDisplaySettings() instanceof DefaultDisplaySettings) {
-               DefaultDisplaySettings ds = (DefaultDisplaySettings) display_.getDisplaySettings();
-               ds.saveToProfile(studio_.profile(), PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
-            }
             display_.removeListener(this);
             display_ = null;
          }
@@ -436,9 +428,6 @@ public final class MMAcquisition extends DataViewerListener {
                ((DefaultDisplaySettings) display_.getDisplaySettings())
                      .save(store_.getSavePath());
             }
-            // save display settings to profile
-            ((DefaultDisplaySettings) display_.getDisplaySettings()).saveToProfile(
-                  studio_.profile(), PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
          }
          display_.unregisterForEvents(this);
       }
@@ -461,22 +450,6 @@ public final class MMAcquisition extends DataViewerListener {
    public void onNewImage(DataProviderHasNewImageEvent event) {
       imagesReceived_++;
       setProgressText();
-   }
-
-   /**
-    * VIewer signals that display setting changed.
-    *
-    * @param event display settings changed event.
-    */
-   @Subscribe
-   public void onDisplaySettingsChangedEvent(DisplaySettingsChangedEvent event) {
-      if (!event.getDataViewer().equals(display_)) {
-         ReportingUtils.logError("MMAcquisition: received event from unknown viewer");
-      }
-      if (event.getDisplaySettings() instanceof DefaultDisplaySettings) {
-         ((DefaultDisplaySettings) event.getDisplaySettings()).saveToProfile(
-               studio_.profile(), PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
-      }
    }
 
    private void setProgressText() {

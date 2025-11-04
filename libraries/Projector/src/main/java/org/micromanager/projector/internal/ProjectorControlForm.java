@@ -33,6 +33,7 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
+import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
@@ -44,8 +45,8 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
@@ -67,10 +68,10 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import javax.swing.SpinnerNumberModel;
+import javax.swing.SwingUtilities;
 import javax.swing.event.ChangeEvent;
 import javax.swing.text.DefaultFormatter;
 import mmcorej.CMMCore;
-import mmcorej.Configuration;
 import mmcorej.DeviceType;
 import net.miginfocom.swing.MigLayout;
 import org.micromanager.Studio;
@@ -84,6 +85,8 @@ import org.micromanager.events.SLMExposureChangedEvent;
 import org.micromanager.events.ShutdownCommencingEvent;
 import org.micromanager.internal.utils.FileDialogs;
 import org.micromanager.internal.utils.FileDialogs.FileType;
+import org.micromanager.internal.utils.NumberUtils;
+import org.micromanager.internal.utils.SliderPanel;
 import org.micromanager.internal.utils.WindowPositioning;
 import org.micromanager.projector.Mapping;
 import org.micromanager.projector.ProjectionDevice;
@@ -110,6 +113,7 @@ public class ProjectorControlForm extends JFrame {
    private final Studio studio_;
    private final MutablePropertyMapView settings_;
    private final boolean isSLM_;
+   private final boolean isASIScanner_;
    private Roi[] individualRois_ = {};
    private Mapping mapping_;
    private String targetingChannel_;
@@ -122,6 +126,8 @@ public class ProjectorControlForm extends JFrame {
    private String logFile_;
    private BufferedWriter mdaLogFileWriter_;
    private String mdaLogFile_;
+   private double xCenter_ = 0.0;
+   private double yCenter_ = 0.0;
 
 
    private static final SimpleDateFormat LOGFILEDATE_FORMATTER =
@@ -142,7 +148,8 @@ public class ProjectorControlForm extends JFrame {
    private javax.swing.JButton checkerBoardButton_;
    private javax.swing.JTextField delayField_;
    private javax.swing.JTextField logDirectoryTextField_;
-   private javax.swing.JSpinner pointAndShootIntervalSpinner_;
+   private javax.swing.JSpinner pointAndShootIntervalSpinner_; // NB: mis-named
+   // pointAndShootIntervalSpinner actually is the exposure time; device setSpotInterval() also
    private javax.swing.JToggleButton pointAndShootOffButton_;
    private javax.swing.JToggleButton pointAndShootOnButton;
    private javax.swing.JCheckBox repeatCheckBox_;
@@ -154,6 +161,7 @@ public class ProjectorControlForm extends JFrame {
    private javax.swing.JLabel roiLoopLabel_;
    private javax.swing.JSpinner roiLoopSpinner_;
    private javax.swing.JLabel roiLoopTimesLabel_;
+   private javax.swing.JSpinner roiIntervalSpinner_;
    private javax.swing.JLabel roiStatusLabel_;
    private javax.swing.JButton exposeROIsButton_;
    private javax.swing.JButton sequencingButton_;
@@ -174,22 +182,34 @@ public class ProjectorControlForm extends JFrame {
       core_ = app.getCMMCore();
       settings_ = studio_.profile().getSettings(this.getClass());
       dev_ = ProjectorActions.getProjectionDevice(studio_);
+      xCenter_ = settings_.getDouble(Terms.XCENTER, dev_.getXMinimum() + dev_.getXRange() / 2);
+      yCenter_ = settings_.getDouble(Terms.YCENTER, dev_.getYMinimum() + dev_.getYRange() / 2);
       mapping_ = MappingStorage.loadMapping(core_, dev_, settings_.toPropertyMap());
       pointAndShootQueue_ = new LinkedBlockingQueue<>();
       projectorControlExecution_ = new ProjectorControlExecution(studio_);
       studio_.events().registerForEvents(projectorControlExecution_);
 
+      isSLM_ = dev_ instanceof SLM;
+      // Only an SLM (not a galvo) has pixels.
+
+      boolean temp = false;
+      try {
+         temp = !isSLM_ && core_.getDeviceLibrary(dev_.getName()).equals("ASITiger");
+      }  catch (Exception ex) {
+         studio_.logs().logError(ex);
+      }
+      isASIScanner_ = temp;
+
       // Create GUI
       initComponents();
 
-      isSLM_ = dev_ instanceof SLM;
-      // Only an SLM (not a galvo) has pixels.
       allPixelsButton_.setVisible(isSLM_);
       checkerBoardButton_.setVisible(isSLM_);
       // No point in looping ROIs on an SLM.
       roiLoopSpinner_.setVisible(!isSLM_);
       roiLoopLabel_.setVisible(!isSLM_);
       roiLoopTimesLabel_.setVisible(!isSLM_);
+      roiIntervalSpinner_.setVisible(isASIScanner_);
       pointAndShootOffButton_.setSelected(true);
       populateChannelComboBox(settings_.getString(Terms.PTCHANNEL, ""));
       populateShutterComboBox(settings_.getString(Terms.PTSHUTTER, ""));
@@ -208,7 +228,9 @@ public class ProjectorControlForm extends JFrame {
       commitSpinnerOnValidEdit(repeatEveryFrameSpinner_);
       commitSpinnerOnValidEdit(repeatEveryIntervalSpinner_);
       commitSpinnerOnValidEdit(roiLoopSpinner_);
+      commitSpinnerOnValidEdit(roiIntervalSpinner_);
       pointAndShootIntervalSpinner_.setValue(dev_.getExposure() / 1000);
+      roiIntervalSpinner_.setValue(dev_.getRoiInterval() / 1000);
       sequencingButton_.setVisible(MosaicSequencingFrame.getMosaicDevices(core).size() > 0);
 
       studioEventHandler_ = new Object() {
@@ -405,12 +427,12 @@ public class ProjectorControlForm extends JFrame {
                   studio_.logs().logError("Failed to reset shutter in Projector calibration");
                }
             }
-            if (!originalChannel.isEmpty()) {
+            if (originalChannel != null && !originalChannel.isEmpty()) {
                projectorControlExecution_.returnChannel(originalChannel);
             }
             studio_.alerts().postAlert("Projector Calibration", this.getClass(),
                   "Calibration " + (success ? "succeeded." : "failed."));
-            calibrateButton_.setText("Calibrate");
+            SwingUtilities.invokeLater(() -> calibrateButton_.setText("Calibrate"));
             calibrator_ = null;
          }
       };
@@ -854,6 +876,7 @@ public class ProjectorControlForm extends JFrame {
       roiLoopLabel_.setEnabled(roisSubmitted);
       roiLoopSpinner_.setEnabled(!isSLM_ && roisSubmitted);
       roiLoopTimesLabel_.setEnabled(!isSLM_ && roisSubmitted);
+      roiIntervalSpinner_.setEnabled(isASIScanner_ && roisSubmitted);
       exposeROIsButton_.setEnabled(roisSubmitted);
       useInMDAcheckBox.setEnabled(roisSubmitted);
 
@@ -863,6 +886,13 @@ public class ProjectorControlForm extends JFrame {
          settings_.putInteger(Terms.NRROIREPETITIONS, nrRepetitions);
       }
       dev_.setPolygonRepetitions(nrRepetitions);
+
+      double roiIntervalMs = 0;
+      if (roiIntervalSpinner_.isEnabled()) {
+         roiIntervalMs = getSpinnerDoubleValue(roiIntervalSpinner_);
+         settings_.putDouble(Terms.ROIINTERVAL, roiIntervalMs);
+      }
+      ProjectorActions.setRoiIntervalUs(dev_, 1000 * roiIntervalMs);
 
       boolean useInMDA = roisSubmitted && useInMDAcheckBox.isSelected();
       attachToMdaTabbedPane_.setEnabled(useInMDA);
@@ -920,6 +950,33 @@ public class ProjectorControlForm extends JFrame {
       settings_.putDouble(Terms.EXPOSURE, exposureMs);
    }
 
+   // Set the ROI interval to whatever value is currently in the Interval field.
+   private void updateRoiInterval() {
+      double intervalMs = Double.parseDouble(
+              roiIntervalSpinner_.getValue().toString());
+      ProjectorActions.setRoiIntervalUs(dev_, 1000 * intervalMs);
+      settings_.putDouble(Terms.ROIINTERVAL, intervalMs);
+   }
+
+   private void updateX(String text) {
+      try {
+         xCenter_ = NumberUtils.displayStringToDouble(text);
+         settings_.putDouble(Terms.XCENTER, xCenter_);
+         ProjectorActions.displaySpot(dev_, xCenter_, yCenter_);
+      } catch (ParseException e) {
+         studio_.logs().logError(e);
+      }
+   }
+
+   private void updateY(String text) {
+      try {
+         yCenter_ = NumberUtils.displayStringToDouble(text);
+         settings_.putDouble(Terms.YCENTER, yCenter_);
+         ProjectorActions.displaySpot(dev_, xCenter_, yCenter_);
+      } catch (ParseException e) {
+         studio_.logs().logError(e);
+      }
+   }
 
    /**
     * Show the Mosaic Sequencing window (a JFrame). Should only be called if we already know the
@@ -994,6 +1051,7 @@ public class ProjectorControlForm extends JFrame {
       roiLoopTimesLabel_ = new JLabel();
       exposeROIsButton_ = new JButton();
       roiLoopSpinner_ = new JSpinner();
+      roiIntervalSpinner_ = new JSpinner();
       useInMDAcheckBox = new JCheckBox();
       roiStatusLabel_ = new JLabel();
       sequencingButton_ = new JButton();
@@ -1172,6 +1230,10 @@ public class ProjectorControlForm extends JFrame {
       roiLoopSpinner_.addChangeListener((ChangeEvent evt) -> updateROISettings());
       roiLoopSpinner_.setValue(settings_.getInteger(Terms.NRROIREPETITIONS, 1));
 
+      roiIntervalSpinner_.setModel(new SpinnerNumberModel(1, 0, 1000000000, 1));
+      roiIntervalSpinner_.addChangeListener((ChangeEvent evt) -> updateRoiInterval());
+      roiIntervalSpinner_.setValue(settings_.getDouble(Terms.ROIINTERVAL, 1.0));
+
       useInMDAcheckBox.setText("Run ROIs in Multi-Dimensional Acquisition");
       useInMDAcheckBox.addActionListener((ActionEvent evt) -> updateROISettings());
 
@@ -1242,7 +1304,15 @@ public class ProjectorControlForm extends JFrame {
 
       roisTab.add(roiLoopLabel_, "split 3");
       roisTab.add(roiLoopSpinner_, "wmin 60, wmax 60");
-      roisTab.add(roiLoopTimesLabel_, "wrap");
+
+      if (isASIScanner_) {
+         roisTab.add(roiLoopTimesLabel_);
+         roisTab.add(new JLabel("Interval"), "align center, split 3");
+         roisTab.add(roiIntervalSpinner_, "wmin 60, wmax 60");
+         roisTab.add(new JLabel("ms"), "wrap");
+      } else {
+         roisTab.add(roiLoopTimesLabel_, "wrap");
+      }
 
       roisTab.add(exposeROIsButton_, "align center");
       roisTab.add(useInMDAcheckBox, "wrap");
@@ -1270,10 +1340,36 @@ public class ProjectorControlForm extends JFrame {
       allPixelsButton_.setText("All Pixels");
       allPixelsButton_.addActionListener((ActionEvent evt) -> dev_.activateAllPixels());
 
-      centerButton.setText("Center spot");
+      centerButton.setText("Show Center Spot");
       centerButton.addActionListener((ActionEvent evt) -> {
-         dev_.turnOff();
-         ProjectorActions.displayCenterSpot(dev_);
+         ProjectorActions.displaySpot(dev_, xCenter_, yCenter_);
+      });
+      final JLabel xLabel = new JLabel("Center-X ");
+      final SliderPanel xSlider = new SliderPanel();
+      xSlider.setLimits(dev_.getXMinimum(), dev_.getXMinimum() + dev_.getXRange());
+      final JLabel yLabel = new JLabel("Center-Y ");
+      final SliderPanel ySlider = new SliderPanel();
+      ySlider.setLimits(dev_.getYMinimum(), dev_.getYMinimum() + dev_.getYRange());
+      try {
+         xSlider.setText(NumberUtils.doubleToDisplayString(xCenter_));
+         ySlider.setText(NumberUtils.doubleToDisplayString(yCenter_));
+      } catch (ParseException e) {
+         studio_.logs().logError(e);
+      }
+      xSlider.addEditActionListener((evt) -> updateX(xSlider.getText()));
+      xSlider.addSliderMouseListener(new MouseAdapter() {
+         @Override
+         public void mouseReleased(MouseEvent e) {
+            updateX(xSlider.getText());
+         }
+      });
+
+      ySlider.addEditActionListener((evt) -> updateY(ySlider.getText()));
+      ySlider.addSliderMouseListener(new MouseAdapter() {
+         @Override
+         public void mouseReleased(MouseEvent e) {
+            updateY(ySlider.getText());
+         }
       });
 
       channelComboBox_.setModel(new DefaultComboBoxModel<>(
@@ -1302,6 +1398,11 @@ public class ProjectorControlForm extends JFrame {
       setupTab.add(centerButton);
       setupTab.add(allPixelsButton_);
       setupTab.add(checkerBoardButton_, "wrap");
+
+      setupTab.add(xLabel, "span 3, split");
+      setupTab.add(xSlider, "wrap");
+      setupTab.add(yLabel, "span 3, split");
+      setupTab.add(ySlider, "wrap");
 
       setupTab.add(calibrateButton_);
       setupTab.add(new JLabel("Delay(ms):"), "span 2, split 2");
@@ -1336,6 +1437,7 @@ public class ProjectorControlForm extends JFrame {
 
       pack();
    }
+
 
    // *****************  Deprecated functions ****************** //
 

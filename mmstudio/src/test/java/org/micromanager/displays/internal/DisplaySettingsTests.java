@@ -3,8 +3,10 @@ package org.micromanager.displays.internal;
 
 
 import static org.junit.Assert.*;
+
 import org.junit.Test;
 import org.micromanager.PropertyMap;
+import org.micromanager.display.DisplaySettings;
 import org.micromanager.display.internal.DefaultDisplaySettings;
 
 /**
@@ -16,9 +18,9 @@ public class DisplaySettingsTests {
    @Test
    public void testDisplaySettings() {
       // Generate default DisplaySettings
-      DefaultDisplaySettings ds = (DefaultDisplaySettings) DefaultDisplaySettings.builder().build();
-      PropertyMap pMap = ds.toPropertyMap();
-      DefaultDisplaySettings fromMap = (DefaultDisplaySettings) DefaultDisplaySettings.fromPropertyMap(pMap);
+      DefaultDisplaySettings ds =  (DefaultDisplaySettings) DefaultDisplaySettings.builder().build();
+      PropertyMap pMap = DefaultDisplaySettings.toPropertyMap(ds);
+      DisplaySettings fromMap = DefaultDisplaySettings.fromPropertyMap(pMap).build();
       
       assertEquals(ds.getAutoscaleIgnoredQuantile(), fromMap.getAutoscaleIgnoredQuantile(), 0.00001);
       assertEquals(ds.getChannelColorMode(), fromMap.getChannelColorMode());

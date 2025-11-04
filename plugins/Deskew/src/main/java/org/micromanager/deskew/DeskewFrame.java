@@ -34,6 +34,8 @@ import net.haesleinhuepf.clij2.CLIJ2;
 import net.miginfocom.swing.MigLayout;
 import org.micromanager.PropertyMap;
 import org.micromanager.Studio;
+import org.micromanager.acquisition.AcquisitionSettingsChangedEvent;
+import org.micromanager.acquisition.SequenceSettings;
 import org.micromanager.data.Coords;
 import org.micromanager.data.DataProvider;
 import org.micromanager.data.Datastore;
@@ -83,10 +85,22 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
    static final String OPTION_REWRITABLE_RAM = "Option Rewritable RAM";
    static final String OUTPUT_PATH = "Output path";
    static final String SHOW = "Show";
+   static final String SYNC_WITH_MDA = "Sync with MDA";
    private final Studio studio_;
+   private final DeskewFactory deskewFactory_;
    private final MutablePropertyMapView settings_;
    private final CLIJ2 clij2_;
    private JComboBox<String> input_;
+   private JRadioButton outputSingleplane_;
+   private JRadioButton outputMultipage_;
+   private JRadioButton outputRam_;
+   private JRadioButton outputRewritableRam_;
+   private JCheckBox keepOriginal_;
+   private JCheckBox showDisplay_;
+   private JTextField outputPath_;
+   private JButton browseButton_;
+   private JButton copyDirButton_;
+   private boolean eventsRegistered_ = false;
 
    /**
     * Generates the UI.
@@ -94,8 +108,10 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
     * @param configuratorSettings I am always confused about this propertymap
     * @param studio The Studio instance, usually a singleton.
     */
-   public DeskewFrame(PropertyMap configuratorSettings, Studio studio) {
+   public DeskewFrame(PropertyMap configuratorSettings, Studio studio,
+                      DeskewFactory deskewFactory) {
       studio_ = studio;
+      deskewFactory_ = deskewFactory;
       settings_ = studio_.profile().getSettings(this.getClass());
       clij2_ = CLIJ2.getInstance();
       studio_.logs().logMessage(CLIJ2.clinfo());
@@ -121,7 +137,6 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
 
    @Override
    public PropertyMap getSettings() {
-      settings_.putBoolean(KEEP_ORIGINAL, true);
       return settings_.toPropertyMap();
    }
 
@@ -152,6 +167,23 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
       JComboBox<String> gpuComboBox = new JComboBox<>();
       for (String device : openCLDevices()) {
          gpuComboBox.addItem(device);
+      }
+      String selectedGPU = "";
+      if (gpuComboBox.getItemCount() > 0) {
+         selectedGPU = (String) gpuComboBox.getSelectedItem();
+         String savedGPU = settings_.getString(GPU, selectedGPU);
+         // Only set if the saved value exists in the combo box items
+         boolean found = false;
+         for (int i = 0; i < gpuComboBox.getItemCount(); i++) {
+            if (gpuComboBox.getItemAt(i).equals(savedGPU)) {
+               found = true;
+               break;
+            }
+         }
+         if (found) {
+            gpuComboBox.setSelectedItem(savedGPU);
+         }
+         // else: leave the default selection unchanged
       }
       gpuComboBox.addActionListener(e -> {
          settings_.putString(GPU, (String) gpuComboBox.getSelectedItem());
@@ -195,108 +227,126 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
       add(buttons.get(1), "wrap");
 
       add(new JSeparator(), "span 5, growx, wrap");
-      add(new JLabel("Output format:"), "spanx, alignx left, wrap");
+      add(new JLabel("Output format:"), "span 4, alignx left");
+      final JCheckBox syncWithMDA =
+            createCheckBox(SYNC_WITH_MDA, true);
+      add(syncWithMDA, "alignx right, wrap");
 
-      JRadioButton outputSingleplane = new JRadioButton("Separate Image Files");
-      JRadioButton outputMultipage = new JRadioButton("Image Stack File");
-      JRadioButton outputRam = new JRadioButton("Hold in RAM");
-      JRadioButton outputRewritableRam = new JRadioButton("Live");
-      final JCheckBox showDisplay = new JCheckBox("Show In New Window");
+      outputSingleplane_ = new JRadioButton("Separate Image Files");
+      outputMultipage_ = new JRadioButton("Image Stack File");
+      outputRam_ = new JRadioButton("Hold in RAM");
+      outputRewritableRam_ = new JRadioButton("Live");
+      showDisplay_ = new JCheckBox(SHOW);
+      keepOriginal_ = new JCheckBox("Keep Original Images");
       ButtonGroup group = new ButtonGroup();
-      group.add(outputSingleplane);
-      group.add(outputMultipage);
-      group.add(outputRam);
-      group.add(outputRewritableRam);
+      group.add(outputSingleplane_);
+      group.add(outputMultipage_);
+      group.add(outputRam_);
+      group.add(outputRewritableRam_);
       group.clearSelection();
       String selectedItem = settings_.getString(OUTPUT_OPTION, OPTION_RAM);
       switch (selectedItem) {
          case OPTION_SINGLE_TIFF:
-            outputSingleplane.setSelected(true);
+            outputSingleplane_.setSelected(true);
             break;
          case OPTION_MULTI_TIFF:
-            outputMultipage.setSelected(true);
+            outputMultipage_.setSelected(true);
             break;
          case OPTION_RAM:
-            outputRam.setSelected(true);
+            outputRam_.setSelected(true);
             break;
          case OPTION_REWRITABLE_RAM:
-            outputRewritableRam.setSelected(true);
+            outputRewritableRam_.setSelected(true);
             break;
          default:
             break;
       }
-      final JTextField outputPath = new JTextField(25);
-      final JButton browseButton = new JButton("...");
-      final JTextField outputName = new JTextField(15);
+      outputPath_ = new JTextField(25);
+      browseButton_ = new JButton("...");
+      copyDirButton_ = new JButton("from MDA");
       final ActionListener listener = e -> {
-         if (outputRam.isSelected()) {
-            showDisplay.setSelected(true);
-            settings_.putBoolean(SHOW, true);
-            settings_.putString(OUTPUT_OPTION, OPTION_RAM);
-         } else if (outputRewritableRam.isSelected()) {
-            showDisplay.setSelected(true);
-            settings_.putBoolean(SHOW, true);
-            settings_.putString(OUTPUT_OPTION, OPTION_REWRITABLE_RAM);
-         } else if (outputSingleplane.isSelected()) {
-            settings_.putString(OUTPUT_OPTION, OPTION_SINGLE_TIFF);
-         } else if (outputMultipage.isSelected()) {
-            settings_.putString(OUTPUT_OPTION, OPTION_MULTI_TIFF);
-         }
-         outputPath.setEnabled(!outputRam.isSelected() && !outputRewritableRam.isSelected());
-         browseButton.setEnabled(!outputRam.isSelected() && !outputRewritableRam.isSelected());
-         outputName.setEnabled(!outputRam.isSelected() && !outputRewritableRam.isSelected());
+         updateDisplayControls();
       };
 
-      outputPath.setEnabled(!outputRam.isSelected() && !outputRewritableRam.isSelected());
-      browseButton.setEnabled(!outputRam.isSelected() && !outputRewritableRam.isSelected());
-      outputName.setEnabled(!outputRam.isSelected() && !outputRewritableRam.isSelected());
-      outputSingleplane.addActionListener(listener);
-      outputMultipage.addActionListener(listener);
-      outputRam.addActionListener(listener);
-      outputRewritableRam.addActionListener(listener);
-      add(outputSingleplane, "split, spanx");
-      add(outputMultipage);
-      add(outputRam);
-      add(outputRewritableRam, "wrap");
+      outputPath_.setEnabled(!outputRam_.isSelected() && !outputRewritableRam_.isSelected());
+      browseButton_.setEnabled(!outputRam_.isSelected() && !outputRewritableRam_.isSelected());
+      copyDirButton_.setEnabled(!outputRam_.isSelected() && !outputRewritableRam_.isSelected());
+      outputSingleplane_.addActionListener(listener);
+      outputMultipage_.addActionListener(listener);
+      outputRam_.addActionListener(listener);
+      outputRewritableRam_.addActionListener(listener);
+      add(outputSingleplane_, "split, spanx");
+      add(outputMultipage_);
+      add(outputRam_);
+      add(outputRewritableRam_, "wrap");
 
       add(new JLabel("Save Directory: "), "split, spanx");
-      outputPath.setToolTipText("Directory that will contain the new saved data");
-      outputPath.setText(settings_.getString(OUTPUT_PATH, ""));
-      outputPath.getDocument().addDocumentListener(new DocumentListener() {
+      outputPath_.setToolTipText("Directory that will contain the new saved data");
+      outputPath_.setText(settings_.getString(OUTPUT_PATH, ""));
+      outputPath_.getDocument().addDocumentListener(new DocumentListener() {
          @Override
          public void insertUpdate(DocumentEvent e) {
-            settings_.putString(OUTPUT_PATH, outputPath.getText());
+            settings_.putString(OUTPUT_PATH, outputPath_.getText());
          }
 
          @Override
          public void removeUpdate(DocumentEvent e) {
-            settings_.putString(OUTPUT_PATH, outputPath.getText());
+            settings_.putString(OUTPUT_PATH, outputPath_.getText());
          }
 
          @Override
          public void changedUpdate(DocumentEvent e) {
-            settings_.putString(OUTPUT_PATH, outputPath.getText());
+            settings_.putString(OUTPUT_PATH, outputPath_.getText());
          }
       });
-      add(outputPath, "growx");
-      browseButton.setToolTipText("Browse for a directory to save to");
-      browseButton.addActionListener(e -> {
+      add(outputPath_, "growx");
+      copyDirButton_.setToolTipText("Copy directory root from MDA Window");
+      copyDirButton_.addActionListener(e -> {
+         String path = studio_.acquisitions().getAcquisitionSettings().root();
+         if (path != null && !path.isEmpty()) {
+            outputPath_.setText(path);
+            settings_.putString(OUTPUT_PATH, path);
+         } else {
+            studio_.logs().showError("No MDA directory set. Please run an MDA first.");
+         }
+      });
+      add(copyDirButton_);
+
+      browseButton_.setToolTipText("Browse for a directory to save to");
+      browseButton_.addActionListener(e -> {
          File result = FileDialogs.openDir(DeskewFrame.this,
                   "Please choose a directory to save to",
                   FileDialogs.MM_DATA_SET);
          if (result != null) {
-            outputPath.setText(result.getAbsolutePath());
+            outputPath_.setText(result.getAbsolutePath());
             settings_.putString(OUTPUT_PATH, result.getAbsolutePath());
          }
       });
-      add(browseButton, "wrap");
+      add(browseButton_, "wrap");
 
-      showDisplay.setToolTipText("Display the processed data in a new image window");
-      showDisplay.setSelected(settings_.getBoolean(SHOW, true));
-      add(showDisplay, "spanx, alignx right, wrap");
-      showDisplay.addActionListener(e -> {
-         settings_.putBoolean(SHOW, showDisplay.isSelected());
+      keepOriginal_.setToolTipText("Keep the original images in the output dataset");
+      keepOriginal_.setSelected(settings_.getBoolean(KEEP_ORIGINAL, true));
+      keepOriginal_.addActionListener(e -> {
+         settings_.putBoolean(KEEP_ORIGINAL, keepOriginal_.isSelected());
       });
+      add(keepOriginal_);
+
+      showDisplay_.setToolTipText("Display the processed data in a new image window");
+      showDisplay_.setSelected(settings_.getBoolean(SHOW, true));
+      add(showDisplay_, "spanx, alignx right, wrap");
+      showDisplay_.addActionListener(e -> {
+         settings_.putBoolean(SHOW, showDisplay_.isSelected());
+      });
+
+      syncWithMDA.addActionListener(e -> {
+         settings_.putBoolean(SYNC_WITH_MDA, syncWithMDA.isSelected());
+         manageMDASync(syncWithMDA.isSelected());
+      });
+      syncWithMDA.setSelected(settings_.getBoolean(SYNC_WITH_MDA, false));
+      if (syncWithMDA.isSelected()) {
+         updateUIBasedOnAcquisitionSettings(studio_.acquisitions().getAcquisitionSettings());
+      }
+      manageMDASync(syncWithMDA.isSelected());
 
       add(new JSeparator(), "span 5, growx, wrap");
 
@@ -309,8 +359,95 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
       refreshInputOptions();
       add(input_, "wrap");
 
-
       pack();
+   }
+
+   /**
+    * This is called when the acquisition settings change, e.g. when the
+    * user changes the MDA directory.
+    *
+    * @param event The event containing the new acquisition settings.
+    */
+   @Subscribe
+   public void onAcquisitionSettingsChanged(AcquisitionSettingsChangedEvent event) {
+      updateUIBasedOnAcquisitionSettings(event.getNewSettings());
+   }
+
+   private void updateUIBasedOnAcquisitionSettings(SequenceSettings sequenceSettings) {
+      String newRoot = sequenceSettings.root();
+      if (newRoot != null) {
+         outputPath_.setText(newRoot);
+         settings_.putString(OUTPUT_PATH, newRoot);
+      }
+      if (sequenceSettings.save()) {
+         switch (sequenceSettings.saveMode()) {
+            case SINGLEPLANE_TIFF_SERIES:
+               outputSingleplane_.setSelected(true);
+               settings_.putString(OUTPUT_OPTION, OPTION_SINGLE_TIFF);
+               break;
+            case MULTIPAGE_TIFF:
+               outputMultipage_.setSelected(true);
+               settings_.putString(OUTPUT_OPTION, OPTION_MULTI_TIFF);
+               break;
+            default:
+               outputRam_.setSelected(true);
+               settings_.putString(OUTPUT_OPTION, OPTION_RAM);
+               showDisplay_.setSelected(true);
+               break;
+         }
+      } else {
+         outputRam_.setSelected(true);
+         settings_.putString(OUTPUT_OPTION, OPTION_RAM);
+         showDisplay_.setSelected(true);
+      }
+   }
+
+   private void updateDisplayControls() {
+      if (outputRam_.isSelected()) {
+         showDisplay_.setSelected(true);
+         settings_.putBoolean(SHOW, true);
+         settings_.putString(OUTPUT_OPTION, OPTION_RAM);
+      } else if (outputRewritableRam_.isSelected()) {
+         showDisplay_.setSelected(true);
+         settings_.putBoolean(SHOW, true);
+         settings_.putString(OUTPUT_OPTION, OPTION_REWRITABLE_RAM);
+      } else if (outputSingleplane_.isSelected()) {
+         settings_.putString(OUTPUT_OPTION, OPTION_SINGLE_TIFF);
+      } else if (outputMultipage_.isSelected()) {
+         settings_.putString(OUTPUT_OPTION, OPTION_MULTI_TIFF);
+      }
+      outputPath_.setEnabled(!outputRam_.isSelected() && !outputRewritableRam_.isSelected());
+      browseButton_.setEnabled(!outputRam_.isSelected() && !outputRewritableRam_.isSelected());
+      copyDirButton_.setEnabled(!outputRam_.isSelected() && !outputRewritableRam_.isSelected());
+   }
+
+   private void manageMDASync(boolean syncEnabled) {
+      if (syncEnabled) {
+         if (!eventsRegistered_) {
+            eventsRegistered_ = true;
+            studio_.events().registerForEvents(this);
+         }
+         outputPath_.setEnabled(false);
+         browseButton_.setEnabled(false);
+         copyDirButton_.setEnabled(false);
+         outputMultipage_.setEnabled(false);
+         outputSingleplane_.setEnabled(false);
+         outputRam_.setEnabled(false);
+         outputRewritableRam_.setEnabled(false);
+      } else {
+         if (eventsRegistered_) {
+            studio_.events().unregisterForEvents(this);
+            eventsRegistered_ = false;
+         }
+         outputPath_.setEnabled(true);
+         browseButton_.setEnabled(true);
+         copyDirButton_.setEnabled(true);
+         outputMultipage_.setEnabled(true);
+         outputSingleplane_.setEnabled(true);
+         outputRam_.setEnabled(true);
+         outputRewritableRam_.setEnabled(true);
+         updateDisplayControls();
+      }
    }
 
    private JCheckBox createCheckBox(String key, boolean initialValue) {
@@ -449,11 +586,17 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
                "Processing images...                                    \t",
                 "", 0, source.getNumImages());
 
-      Datastore destination = studio_.data().createRAMDatastore();
-      List<ProcessorFactory> factories = new ArrayList<>();
+      final Datastore destination = studio_.data().createRAMDatastore();
+      final List<ProcessorFactory> factories = new ArrayList<>();
 
+      // Elaborate way to deal with KeepOriginal when processing existing data.
+      // We do not want to reproduce the originals, but we want to keep the
+      // KEEP_ORIGINAL setting in the settings_ object.
+      boolean keepOriginal = settings_.getBoolean(KEEP_ORIGINAL, false);
       settings_.putBoolean(KEEP_ORIGINAL, false);
-      factories.add(new DeskewFactory(studio_, settings_.toPropertyMap()));
+      deskewFactory_.setSettings(settings_.toPropertyMap());
+      settings_.putBoolean(KEEP_ORIGINAL, keepOriginal);
+      factories.add(deskewFactory_);
       Pipeline pipeline = studio_.data().createPipeline(factories, destination, true);
       try {
          pipeline.insertSummaryMetadata(source.getSummaryMetadata());
@@ -463,20 +606,30 @@ public class DeskewFrame extends JFrame implements ProcessorConfigurator {
             orderedImageCoords.add(c);
          }
          final List<String> axisOrder = source.getSummaryMetadata().getOrderedAxes();
-         Collections.reverse(axisOrder);
-
-         Collections.sort(orderedImageCoords, new Comparator<Coords>() {
-            @Override
-            public int compare(Coords o1, Coords o2) {
-               for (String axis : axisOrder) {
-                  if (o1.getIndex(axis)  < o2.getIndex(axis)) {
-                     return -1;
-                  }  else if (o1.getIndex(axis) > o2.getIndex(axis)) {
-                     return 1;
-                  }
+         // We need to ensure that the z axis is last:
+         if (!axisOrder.get(axisOrder.size() - 1).equals(Coords.Z)) {
+            if (axisOrder.get(0).equals(Coords.Z)) {
+               Collections.reverse(axisOrder);
+            } else {
+               if (axisOrder.contains(Coords.Z)) {
+                  int zIndex = axisOrder.indexOf(Coords.Z);
+                  // Move Z to the end of the axis order
+                  axisOrder.remove(zIndex);
+                  // Always add Z to the end of the axis order after removing it
+                  axisOrder.add(Coords.Z);
                }
-               return 0;
             }
+         }
+
+         orderedImageCoords.sort((Coords o1, Coords o2) -> {
+            for (String axis : axisOrder) {
+               if (o1.getIndex(axis) < o2.getIndex(axis)) {
+                  return -1;
+               } else if (o1.getIndex(axis) > o2.getIndex(axis)) {
+                  return 1;
+               }
+            }
+            return 0;
          });
 
          int i = 0;

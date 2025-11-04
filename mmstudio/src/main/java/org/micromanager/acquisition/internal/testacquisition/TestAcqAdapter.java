@@ -97,6 +97,7 @@ public class TestAcqAdapter extends DataViewerListener implements
 
    public static final String ACQ_IDENTIFIER = "Acq_Identifier";
    private static final String TITLE = "Test-Acquisition";
+   private static final String TEST_ACQUISITION_DISPLAY_SETTINGS = "TestAcquisitionDisplaySettings";
    private static final SimpleDateFormat DATE_FORMATTER =
            new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z");
    private Acquisition currentAcquisition_;
@@ -116,8 +117,7 @@ public class TestAcqAdapter extends DataViewerListener implements
    public boolean canCloseViewer(DataViewer viewer) {
       if (viewer.equals(displayWindow_)) {
          if (currentAcquisition_ != null && currentAcquisition_.isStarted()) {
-            currentAcquisition_.abort(new InterruptedException(
-                    "Test Acquisition aborted since user closed Windows"));
+            return abortRequest(displayWindow_.getWindow());
          }
       }
       return true;
@@ -163,11 +163,23 @@ public class TestAcqAdapter extends DataViewerListener implements
     */
    private Datastore runAcquisition(SequenceSettings sequenceSettings) {
       SequenceSettings.Builder sb = sequenceSettings.copyBuilder();
-      sb.useFrames(false).usePositionList(false).save(false);
+      sb.useFrames(false).usePositionList(false).save(false).isTestAcquisition(true);
       sb.numFrames(0);
 
       if (!sequenceSettings.useChannels()) {
          sb.channels(null);
+      }
+
+      // AcquisitionEngineJ has very rigid ideas about stepSize direction. Correct here.
+      if (sequenceSettings.useSlices()) {
+         double zStep = sequenceSettings.sliceZStepUm();
+         if (zStep < 0.0) {
+            zStep = Math.abs(zStep);
+         }
+         if (sequenceSettings.sliceZBottomUm() > sequenceSettings.sliceZTopUm()) {
+            zStep = -zStep;
+         }
+         sb.sliceZStepUm(zStep);
       }
 
       // It is unclear if this code is still needed, it may be needed to add tags to OME TIFF
@@ -226,25 +238,27 @@ public class TestAcqAdapter extends DataViewerListener implements
          curPipeline_ = studio_.data().copyApplicationPipeline(curStore_, false);
          curPipeline_.insertSummaryMetadata(summaryMetadata);
          displayWindow_ = studio_.displays().createDisplay(curStore_, null);
+         displayWindow_.setWindowPositionKey("Test Acquisition");
          displayWindow_.setCustomTitle(TITLE);
 
-         // Use settings of last closed acquisition viewer
-         DisplaySettings dsTmp = DefaultDisplaySettings.restoreFromProfile(
-                 studio_.profile(), PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
-         if (dsTmp == null) {
-            dsTmp = DefaultDisplaySettings.getStandardSettings(
-                    PropertyKey.ACQUISITION_DISPLAY_SETTINGS.key());
+         DisplaySettings displaySettings = studio_.displays().displaySettingsFromProfile(
+                     TEST_ACQUISITION_DISPLAY_SETTINGS);
+         DisplaySettings.Builder displaySettingsBuilder = null;
+         if (displaySettings != null) {
+            displaySettingsBuilder = displaySettings.copyBuilder();
          }
-         DisplaySettings.Builder displaySettingsBuilder = dsTmp.copyBuilder();
          final int nrChannels = summaryMetadata.getChannelNameList().size();
-         if (nrChannels > 0) {
-            // the do-while loop is a way to set display settings in a thread
-            // safe way.  See docs to compareAndSetDisplaySettings.
+         if (displaySettingsBuilder == null) {
+            displaySettingsBuilder = DefaultDisplaySettings.builder();
             if (nrChannels == 1) {
                displaySettingsBuilder.colorModeGrayscale();
             } else {
                displaySettingsBuilder.colorModeComposite();
             }
+         }
+         if (nrChannels > 0) {
+            // the do-while loop is a way to set display settings in a thread
+            // safe way.  See docs to compareAndSetDisplaySettings.
             for (int channelIndex = 0; channelIndex < nrChannels
                      && channelIndex < acquisitionSettings.channels().size(); channelIndex++) {
                displaySettingsBuilder.channel(channelIndex,
@@ -256,6 +270,7 @@ public class TestAcqAdapter extends DataViewerListener implements
          }
          displayWindow_.getWindow().toFront();
          displayWindow_.setDisplaySettings(displaySettingsBuilder.build());
+         displayWindow_.setDisplaySettingsProfileKey(TEST_ACQUISITION_DISPLAY_SETTINGS);
          displayWindow_.addListener(this, 1);
 
          sink.setDatastore(curStore_);
@@ -796,9 +811,6 @@ public class TestAcqAdapter extends DataViewerListener implements
 
          @Override
          public AcquisitionEvent run(AcquisitionEvent event) {
-            if (event.isAcquisitionFinishedEvent()) {
-               return event;
-            }
             // do nothing if this is not our acquisition
             if (acqIndex != null
                     && event.getTags().containsKey(ACQ_IDENTIFIER)
@@ -806,6 +818,16 @@ public class TestAcqAdapter extends DataViewerListener implements
                return event;
             }
             try {
+               if (event.isAcquisitionFinishedEvent()) {
+                  if (sequenceSettings.useSlices()) {
+                     if (sequenceSettings.relativeZSlice()) {
+                        core_.setPosition(sequenceSettings.zReference());
+                     } else {
+                        core_.setPosition(zStagePositionBefore_);
+                     }
+                  }
+                  return event;
+               }
                if (when == AcquisitionAPI.BEFORE_HARDWARE_HOOK) {
                   if (event.getZIndex() == 0) {
                      if (!event.isZSequenced() && sequenceSettings.useChannels()
@@ -1217,16 +1239,20 @@ public class TestAcqAdapter extends DataViewerListener implements
 
    @Override
    public boolean abortRequest() {
+      return abortRequest(null);
+   }
+
+   public boolean abortRequest(Component parentComponent) {
       if (curStore_ == null) {
          stop(true);
          return true;
       }
       if (isAcquisitionRunning()) {
          String[] options = {"Abort", "Cancel"};
-         List<DisplayWindow> displays = studio_.displays().getDisplays((DataProvider) curStore_);
-         Component parentComponent = null;
-         if (displays != null && ! displays.isEmpty()) {
-            parentComponent = displays.get(0).getWindow();
+         if (parentComponent == null) {
+            if (displayWindow_ != null) {
+               parentComponent = displayWindow_.getWindow();
+            }
          }
          int result = JOptionPane.showOptionDialog(parentComponent,
                  "Abort current acquisition task?",

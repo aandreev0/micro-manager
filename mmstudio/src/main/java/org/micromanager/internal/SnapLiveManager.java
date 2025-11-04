@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -50,6 +51,7 @@ import org.micromanager.data.Metadata;
 import org.micromanager.data.NewPipelineEvent;
 import org.micromanager.data.Pipeline;
 import org.micromanager.data.PipelineErrorException;
+import org.micromanager.data.ProcessorConfigurator;
 import org.micromanager.data.internal.DefaultImage;
 import org.micromanager.data.internal.DefaultRewritableDatastore;
 import org.micromanager.data.internal.PropertyKey;
@@ -60,7 +62,7 @@ import org.micromanager.display.DataViewerListener;
 import org.micromanager.display.DisplaySettings;
 import org.micromanager.display.DisplayWindow;
 import org.micromanager.display.DisplayWindowControlsFactory;
-import org.micromanager.display.internal.DefaultDisplaySettings;
+import org.micromanager.display.internal.DefaultDisplayManager;
 import org.micromanager.display.internal.RememberedDisplaySettings;
 import org.micromanager.display.internal.displaywindow.DisplayController;
 import org.micromanager.events.internal.DefaultLiveModeEvent;
@@ -232,6 +234,13 @@ public final class SnapLiveManager extends DataViewerListener
       }
    }
 
+   private void waitForShutter() throws Exception {
+      String shutter = core_.getShutterDevice();
+      if (shutter != null && !shutter.isEmpty()) {
+         core_.waitForDevice(shutter);
+      }
+   }
+
    private void startLiveMode() {
       if (amStartingSequenceAcquisition_) {
          // HACK: if startContinuousSequenceAcquisition results in a core
@@ -255,6 +264,9 @@ public final class SnapLiveManager extends DataViewerListener
          amStartingSequenceAcquisition_ = true;
          core_.startContinuousSequenceAcquisition(0);
          amStartingSequenceAcquisition_ = false;
+         if (core_.getAutoShutter()) {
+            waitForShutter();
+         }
       } catch (Exception e) {
          ReportingUtils.showError(e, "Couldn't start live mode sequence acquisition");
          // Give up on starting live mode.
@@ -386,6 +398,9 @@ public final class SnapLiveManager extends DataViewerListener
          while (core_.isSequenceRunning()) {
             core_.sleep(2);
          }
+         if (core_.getAutoShutter()) {
+            waitForShutter();
+         }
       } catch (Exception e) {
          ReportingUtils.showError(e,
                "Failed to stop sequence acquisition. Double-check shutter status.");
@@ -491,26 +506,31 @@ public final class SnapLiveManager extends DataViewerListener
    }
 
    private void createDisplay() {
-      DisplayWindowControlsFactory controlsFactory =
-            (DisplayWindow display) -> createControls();
-      display_ = new DisplayController.Builder(store_)
-            .controlsFactory(controlsFactory).build(mmStudio_);
-      DisplaySettings ds = DefaultDisplaySettings.restoreFromProfile(
-            mmStudio_.profile(),
-            PropertyKey.SNAP_LIVE_DISPLAY_SETTINGS.key());
-      if (ds == null) {
-         ds = DefaultDisplaySettings.builder().colorMode(
-               DisplaySettings.ColorMode.GRAYSCALE).build();
+      DisplaySettings.Builder displaySettingsBuilder = null;
+      DisplaySettings displaySettings =
+               mmStudio_.displays().displaySettingsFromProfile(
+                        PropertyKey.SNAP_LIVE_DISPLAY_SETTINGS.key());
+      if (displaySettings == null) {
+         displaySettingsBuilder = mmStudio_.displays().displaySettingsBuilder().colorMode(
+               DisplaySettings.ColorMode.GRAYSCALE);
+      } else {
+         displaySettingsBuilder = displaySettings.copyBuilder();
       }
       for (int ch = 0; ch < store_.getSummaryMetadata().getChannelNameList().size(); ch++) {
-         ds = ds.copyBuilderWithChannelSettings(ch,
+         displaySettingsBuilder.channel(ch,
                RememberedDisplaySettings.loadChannel(mmStudio_,
                      store_.getSummaryMetadata().getChannelGroup(),
                      store_.getSummaryMetadata().getSafeChannelName(ch),
-                     Color.white)).build();
+                     Color.white));
       }
+      final DisplayWindowControlsFactory controlsFactory =
+               (DisplayWindow display) -> createControls();
+      display_ = new DisplayController.Builder(store_)
+            .controlsFactory(controlsFactory).displaySettings(displaySettingsBuilder.build())
+               .build(mmStudio_);
+      display_.setDisplaySettingsProfileKey(PropertyKey.SNAP_LIVE_DISPLAY_SETTINGS.key());
+      display_.setWindowPositionKey(DefaultDisplayManager.PREVIEW_DISPLAY);
 
-      display_.setDisplaySettings(ds);
       mmStudio_.displays().addViewer(display_);
 
       display_.registerForEvents(this);
@@ -587,15 +607,15 @@ public final class SnapLiveManager extends DataViewerListener
       toAlbumButton.setMinimumSize(buttonSize);
       toAlbumButton.setFont(GUIUtils.buttonFont);
       toAlbumButton.setMargin(zeroInsets);
-      toAlbumButton.addActionListener((ActionEvent event) -> {
+      toAlbumButton.addActionListener((ActionEvent event) -> {      
          // Send all images at current channel to the album.
          Coords.CoordsBuilder builder = Coordinates.builder();
          boolean hadChannels = false;
          for (int i = 0; i < store_.getNextIndex(Coords.CHANNEL); ++i) {
             builder.channel(i);
             try {
-               mmStudio_.album().addImages(store_.getImagesMatching(
-                     builder.build()));
+               mmStudio_.album().addImagesWithoutProcessing(store_.getImagesIgnoringAxes(
+                     builder.build(), ""));
                hadChannels = true;
             } catch (IOException e) {
                ReportingUtils.showError(e, "There was an error grabbing the images");
@@ -603,8 +623,8 @@ public final class SnapLiveManager extends DataViewerListener
          }
          try {
             if (!hadChannels) {
-               mmStudio_.album().addImages(store_.getImagesMatching(
-                     Coordinates.builder().build()));
+               mmStudio_.album().addImagesWithoutProcessing(store_.getImagesIgnoringAxes(
+                     builder.build(), ""));
             }
          } catch (IOException e) {
             ReportingUtils.showError(e, "There was an error grabbing the image");
@@ -765,7 +785,6 @@ public final class SnapLiveManager extends DataViewerListener
       setSuspended(true);
       if (display_ != null && !display_.isClosed()) {
          //displayLoc = display_.getWindow().getLocation();
-         saveDisplaySettings();
          display_.close();
       }
 
@@ -898,17 +917,9 @@ public final class SnapLiveManager extends DataViewerListener
       }
    }
 
-   private void saveDisplaySettings() {
-      if (display_.getDisplaySettings() instanceof DefaultDisplaySettings) {
-         DefaultDisplaySettings ds = (DefaultDisplaySettings) display_.getDisplaySettings();
-         ds.saveToProfile(mmStudio_.profile(), PropertyKey.SNAP_LIVE_DISPLAY_SETTINGS.key());
-      }
-   }
-
    @Override
    public boolean canCloseViewer(DataViewer viewer) {
       if (viewer instanceof DisplayWindow && viewer.equals(display_)) {
-         saveDisplaySettings();
          setLiveModeOn(false);
       }
       return true;

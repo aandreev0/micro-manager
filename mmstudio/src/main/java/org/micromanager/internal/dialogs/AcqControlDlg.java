@@ -28,6 +28,7 @@ import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Insets;
+import java.awt.Point;
 import java.awt.Toolkit;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
@@ -104,7 +105,9 @@ import org.micromanager.events.GUIRefreshEvent;
 import org.micromanager.events.NewPositionListEvent;
 import org.micromanager.events.PixelSizeChangedEvent;
 import org.micromanager.events.PropertyChangedEvent;
+import org.micromanager.events.ShutdownCommencingEvent;
 import org.micromanager.events.StagePositionChangedEvent;
+import org.micromanager.events.StartupCompleteEvent;
 import org.micromanager.events.SystemConfigurationLoadedEvent;
 import org.micromanager.events.internal.ChannelColorEvent;
 import org.micromanager.internal.MMStudio;
@@ -144,6 +147,7 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
          "whether to prompt the user if their exposure times seem excessively long";
    private static final String BUTTON_SIZE = "width 80!, height 22!";
    private static final String PANEL_CONSTRAINT = "fillx, gap 2, insets 2";
+   private static final String MDA_DLG_OPEN = "MDA_DLG_OPEN";
 
    private JSpinner afSkipInterval_;
    private JComboBox<AcqOrderMode> acqOrderBox_;
@@ -401,7 +405,7 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
             return new JTableHeader(columnModel) {
                @Override
                public String getToolTipText(MouseEvent e) {
-                  java.awt.Point p = e.getPoint();
+                  Point p = e.getPoint();
                   int index = columnModel.getColumnIndexAtX(p.x);
                   int realIndex = columnModel.getColumn(index).getModelIndex();
                   return model_.getToolTipText(realIndex);
@@ -900,7 +904,14 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
       result.add(acquireButton, BUTTON_SIZE);
 
       final JButton stopButton = new JButton("Stop");
-      stopButton.addActionListener((final ActionEvent e) -> getAcquisitionEngine().abortRequest());
+      stopButton.addActionListener((final ActionEvent e) -> {
+         if (testAcqAdapter_.isAcquisitionRunning()) {
+            testAcqAdapter_.abortRequest();
+         }
+         if (getAcquisitionEngine().isAcquisitionRunning()) {
+            getAcquisitionEngine().abortRequest();
+         }
+      });
       stopButton.setFont(new Font("Arial", Font.BOLD, 12));
       result.add(stopButton, BUTTON_SIZE);
       return result;
@@ -987,6 +998,10 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
       testAcquisitionButton.setFont(DEFAULT_FONT);
       testAcquisitionButton.setMargin(new Insets(-5, -5, -5, -5));
       testAcquisitionButton.addActionListener((ActionEvent e) -> {
+         AbstractCellEditor ae = (AbstractCellEditor) channelTable_.getCellEditor();
+         if (ae != null) {
+            ae.stopCellEditing();
+         }
          runTestAcquisition(mmStudio_.acquisitions().getAcquisitionSettings());
       });
       result.add(testAcquisitionButton, BUTTON_SIZE);
@@ -1302,6 +1317,10 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
     */
    public void updateGroupsCombo() {
       String[] groups = getAcquisitionEngine().getAvailableGroups();
+      ActionListener[] als = channelGroupCombo_.getActionListeners();
+      for (ActionListener al : als) {
+         channelGroupCombo_.removeActionListener(al);
+      }
       if (groups.length != 0) {
          channelGroupCombo_.setModel(new DefaultComboBoxModel<>(groups));
          if (!inArray(getAcquisitionEngine().getChannelGroup(), groups)) {
@@ -1309,6 +1328,9 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
          }
 
          channelGroupCombo_.setSelectedItem(getAcquisitionEngine().getChannelGroup());
+      }
+      for (ActionListener al : als) {
+         channelGroupCombo_.addActionListener(al);
       }
    }
 
@@ -1404,8 +1426,15 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
          afPanel_.setSelected(sequenceSettings.useAutofocus());
 
          channelsPanel_.setSelected(sequenceSettings.useChannels());
+         ActionListener[] cgsals = channelGroupCombo_.getActionListeners();
+         for (ActionListener cgsal : cgsals) {
+            channelGroupCombo_.removeActionListener(cgsal);
+         }
          channelGroupCombo_.setSelectedItem(sequenceSettings.channelGroup());
          getAcquisitionEngine().setChannelGroup(sequenceSettings.channelGroup());
+         for (ActionListener cgsal : cgsals) {
+            channelGroupCombo_.addActionListener(cgsal);
+         }
          model_.setChannels(sequenceSettings.channels());
          model_.fireTableStructureChanged();
          chanKeepShutterOpenCheckBox_.setSelected(sequenceSettings.keepShutterOpenChannels());
@@ -1511,21 +1540,33 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
       if (!zDrives.isEmpty()) {
          slicesPanel_.setEnabled(true);
          zDriveLabel_.setVisible(true);
+         // Temporarily remove action listeners to prevent them from being triggered
+         // during the reconfiguration of the combo box. This ensures that the UI
+         // updates correctly without unintended side effects.
+         ActionListener[] actionListeners = zDriveCombo_.getActionListeners();
+         for (ActionListener al : actionListeners) {
+            zDriveCombo_.removeActionListener(al);
+         }
          zDriveCombo_.removeAllItems();
          for (int i = 0; i < zDrives.size(); i++) {
             zDriveCombo_.addItem(zDrives.get(i));
          }
          zDriveCombo_.setSelectedItem(mmStudio_.core().getFocusDevice());
          try {
-            zDrivePositionLabel_.setText(NumberUtils.doubleToDisplayString(
-                     mmStudio_.core().getPosition()));
             zDriveCombo_.setVisible(true);
             double pixelSize = mmStudio_.core().getPixelSizeUm();
             if (pixelSize != 0.0) {
-               proposedZStepLabel_.setText(NumberUtils.doubleToDisplayString(pixelSize * 5.0));
+               proposedZStepLabel_.setText(getOptimalZStep(true));
+            }
+            if (!mmStudio_.core().getFocusDevice().isEmpty()) {
+               zDrivePositionLabel_.setText(NumberUtils.doubleToDisplayString(
+                        mmStudio_.core().getPosition()));
             }
          } catch (Exception ex) {
             mmStudio_.logs().logError(ex, "Failed to get position from core");
+         }
+         for (ActionListener al : actionListeners) {
+            zDriveCombo_.addActionListener(al);
          }
          zDrivePositionLabel_.setVisible(true);
          zDrivePositionUmLabel_.setVisible(true);
@@ -1987,6 +2028,13 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
          ssb.sliceZTopUm(NumberUtils.displayStringToDouble(zEnd_.getText()));
          ssb.sliceZStepUm(NumberUtils.displayStringToDouble(zStep_.getText()));
          ssb.relativeZSlice(zRelativeAbsolute_ == 0);  // 0 == relative, 1 == absolute
+         try {
+            // the default Z stage that will be used in the MDA should be set at this point
+            ssb.zReference(mmStudio_.core().getPosition());
+         } catch (Exception ex) {
+            mmStudio_.logs().logError(ex, "Failed to get Z Position from Core.");
+            // continue, zReference will be set to 0
+         }
          ssb.useSlices(slicesPanel_.isSelected());
 
          ssb.usePositionList(positionsPanel_.isSelected());
@@ -2046,6 +2094,30 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
       channelTable_.editCellAt(editingRow, editingColumn, null);
    }
 
+
+   /**
+    * User has logged in and startup is complete; restore their pipeline.
+    *
+    * @param event signals that MM has completed its startup.
+    */
+   @Subscribe
+   public void onStartupComplete(StartupCompleteEvent event) {
+      if (settings_.getBoolean(MDA_DLG_OPEN, false)) {
+         // if the dialog was open when MM was shut down, restore it now.
+         this.setVisible(true);
+      }
+   }
+
+   /**
+    * When shutdown starts, we record the current processing pipeline, so it
+    * can be restored later.
+    *
+    * @param event signals that MM is commencing shutdown.
+    */
+   @Subscribe
+   public void onShutdownCommencing(ShutdownCommencingEvent event) {
+      settings_.putBoolean(MDA_DLG_OPEN, this.isVisible());
+   }
 
    private double convertTimeToMs(double interval, int units) {
       switch (units) {
@@ -2282,17 +2354,17 @@ public final class AcqControlDlg extends JFrame implements PropertyChangeListene
    }
 
    private String getOptimalZStep(boolean cached) {
+      double optimalZ = 0.0;
       try {
-         double optimalZ = mmStudio_.core().getPixelSizeOptimalZUm(cached);
-         if (optimalZ == 0.0) {
-            double pixelSize = mmStudio_.core().getPixelSizeUm(cached);
-            optimalZ = 4.0 * pixelSize;
-         }
-         return NumberUtils.doubleToDisplayString(optimalZ);
+         optimalZ = mmStudio_.core().getPixelSizeOptimalZUm(cached);
       } catch (Exception ex) {
-         mmStudio_.logs().logError(ex, "Failed to get optimalZ step from core");
+         mmStudio_.logs().logError("Failed to get optimalZ step from core");
       }
-      return "1.0";
+      if (optimalZ == 0.0) {
+         double pixelSize = mmStudio_.core().getPixelSizeUm(cached);
+         optimalZ = 4.0 * pixelSize;
+      }
+      return NumberUtils.doubleToDisplayString(optimalZ);
    }
 
    public static boolean getShouldSyncExposure() {

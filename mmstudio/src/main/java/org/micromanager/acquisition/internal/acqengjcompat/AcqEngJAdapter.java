@@ -106,6 +106,7 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
    private Datastore curStore_;
    private Pipeline curPipeline_;
    private long nextWakeTime_ = -1;
+   private long lastFrameIndex_ = -1;
    private ArrayList<RunnablePlusIndices> runnables_ = new ArrayList<>();
 
    private class RunnablePlusIndices {
@@ -360,9 +361,9 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
             currentAcquisition_.addHook(restorePositionHook(msp),
                     AcquisitionAPI.AFTER_EXPOSURE_HOOK);
          }
-
          // This hook is used to update the time of the next wake up call
          if (sequenceSettings.useFrames()) {
+            lastFrameIndex_ = -1;
             currentAcquisition_.addHook(updateNextWakeHook(acquisitionSettings),
                   AcquisitionAPI.AFTER_HARDWARE_HOOK);
          }
@@ -398,20 +399,39 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
 
       final JSONArray chNames = new JSONArray();
       final JSONArray chColors = new JSONArray();
-      if (acqSettings.useChannels() && acqSettings.channels().size() > 0) {
-         for (ChannelSpec c : acqSettings.channels()) {
-            if (c.useChannel()) {
-               chNames.put(c.config());
-               chColors.put(c.color().getRGB());
+      long nrCameraChannels = studio.core().getNumberOfCameraChannels();
+      if (nrCameraChannels == 1) {
+         if (acqSettings.useChannels() && acqSettings.channels().size() > 0) {
+            for (ChannelSpec c : acqSettings.channels()) {
+               if (c.useChannel()) {
+                  chNames.put(c.config());
+                  chColors.put(c.color().getRGB());
+               }
+            }
+         } else {
+            chNames.put("Default");
+         }
+      } else if (nrCameraChannels > 1) {
+         if (acqSettings.useChannels() && acqSettings.channels().size() > 0) {
+            for (ChannelSpec c : acqSettings.channels()) {
+               if (c.useChannel()) {
+                  for (long i = 0; i < nrCameraChannels; i++) {
+                     chNames.put(c.config() + "-" + studio.core().getCameraChannelName(i));
+                     chColors.put(c.color().getRGB());
+                  }
+               }
+            }
+         } else {
+            for (long i = 0; i < nrCameraChannels; i++) {
+               chNames.put(studio.core().getCameraChannelName(i));
             }
          }
-      } else {
-         chNames.put("Default");
       }
+
       summaryMetadata.put(PropertyKey.CHANNEL_GROUP.key(), acqSettings.channelGroup());
       summaryMetadata.put(PropertyKey.CHANNEL_NAMES.key(), chNames);
       summaryMetadata.put(PropertyKey.CHANNEL_COLORS.key(), chColors);
-      summaryMetadata.put(PropertyKey.CHANNELS.key(), getNumChannels(acqSettings));
+      summaryMetadata.put(PropertyKey.CHANNELS.key(), chNames.length());
       String computerName = "";
       try {
          computerName = InetAddress.getLocalHost().getHostName();
@@ -577,6 +597,17 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
                origin,
                chSpecs,
                null);
+      } else if (acquisitionSettings.useChannels() && !chSpecs.isEmpty()) {
+         boolean hasZOffsets = chSpecs.stream().anyMatch(t -> t.zOffset() != 0);
+         if (hasZOffsets) {
+            // add a fake z stack so that the channel z-offsets are handles correctly
+            zStack = MDAAcqEventModules.zStack(0,
+                  0,
+                  0.1,
+                  studio_.core().getPosition(),
+                  chSpecs,
+                  null);
+         }
       }
 
       Function<AcquisitionEvent, Iterator<AcquisitionEvent>> channels = null;
@@ -617,7 +648,7 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
          if (acquisitionSettings.useChannels()) {
             acqFunctions.add(channels);
          }
-         if (acquisitionSettings.useSlices()) {
+         if (zStack != null) {
             acqFunctions.add(zStack);
          }
       } else if (acquisitionSettings.acqOrderMode() == AcqOrderMode.POS_TIME_SLICE_CHANNEL) {
@@ -627,7 +658,7 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
          if (acquisitionSettings.useFrames()) {
             acqFunctions.add(timelapse);
          }
-         if (acquisitionSettings.useSlices()) {
+         if (zStack != null) {
             acqFunctions.add(zStack);
          }
          if (acquisitionSettings.useChannels()) {
@@ -643,7 +674,7 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
          if (acquisitionSettings.useChannels()) {
             acqFunctions.add(channels);
          }
-         if (acquisitionSettings.useSlices()) {
+         if (zStack != null) {
             acqFunctions.add(zStack);
          }
       } else if (acquisitionSettings.acqOrderMode() == AcqOrderMode.TIME_POS_SLICE_CHANNEL) {
@@ -653,7 +684,7 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
          if (acquisitionSettings.usePositionList()) {
             acqFunctions.add(positions);
          }
-         if (acquisitionSettings.useSlices()) {
+         if (zStack != null) {
             acqFunctions.add(zStack);
          }
          if (acquisitionSettings.useChannels()) {
@@ -938,6 +969,7 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
                   if (event.getZIndex() != null
                         && event.getZIndex() == sequenceSettings.slices().size() - 1) {
                      if (!event.isZSequenced() && sequenceSettings.useChannels()
+                           && event.getAxisPosition(AcqEngMetadata.CHANNEL_AXIS) != null
                              && (sequenceSettings.acqOrderMode()
                                        == AcqOrderMode.TIME_POS_SLICE_CHANNEL
                              || sequenceSettings.acqOrderMode()
@@ -1100,10 +1132,17 @@ public class AcqEngJAdapter implements AcquisitionEngine, MMAcquistionControlCal
          @Override
          public AcquisitionEvent run(AcquisitionEvent event) {
             if (event.getMinimumStartTimeAbsolute() != null) {
-               // Note that nanoTime() and currentTimeMillis() are not guaranteed to have
-               // the same offset (0).
-               nextWakeTime_ = System.nanoTime() / 1000000L
-                       + (long) (sequenceSettings.intervalMs());
+               int frameIndex = event.getTIndex() == null ? 0 : event.getTIndex();
+               if (event.getSequence() != null && event.getSequence().get(0) != null) {
+                  frameIndex = event.getSequence().get(0).getTIndex();
+               }
+               if (frameIndex > lastFrameIndex_) {
+                  lastFrameIndex_ = frameIndex;
+                  // Note that nanoTime() and currentTimeMillis() are not guaranteed to have
+                  // the same offset (0).
+                  nextWakeTime_ = System.nanoTime() / 1000000L
+                           + (long) (sequenceSettings.intervalMs());
+               }
             }
             return event;
          }

@@ -33,6 +33,7 @@ import javax.swing.JOptionPane;
 import org.micromanager.PropertyMap;
 import org.micromanager.PropertyMaps;
 import org.micromanager.Studio;
+import org.micromanager.UserProfile;
 import org.micromanager.data.DataProvider;
 import org.micromanager.data.Datastore;
 import org.micromanager.data.DatastoreClosingEvent;
@@ -65,6 +66,13 @@ import org.micromanager.internal.utils.ReportingUtils;
 
 // TODO Methods must implement correct threading semantics!
 public final class DefaultDisplayManager extends DataViewerListener implements DisplayManager {
+   /**
+    * Keys used by Studio for Window positioning.
+    */
+   public static final String ALBUM_DISPLAY = "ALBUM_DISPLAY";
+   public static final String PREVIEW_DISPLAY = "PREVIEW_DISPLAY";
+   public static final String MDA_DISPLAY = "MDA_DISPLAY";
+
    private static final String[] CLOSE_OPTIONS = new String[] {
          "Cancel", "Prompt for each", "Close without save prompt"};
 
@@ -165,7 +173,12 @@ public final class DefaultDisplayManager extends DataViewerListener implements D
 
    @Override
    public DisplaySettings getStandardDisplaySettings() {
-      return DefaultDisplaySettings.getStandardSettings(null);
+      return DefaultDisplaySettings.builder().build();
+   }
+
+   @Override
+   public DisplaySettings displaySettingsFromProfile(String profileKey) {
+      return DefaultDisplaySettings.restoreFromProfile(profileKey);
    }
 
    @Override
@@ -259,15 +272,36 @@ public final class DefaultDisplayManager extends DataViewerListener implements D
       return ret;
    }
 
-   // TODO: Evaluate a version that includes display settings.
-   // This reduce cpu cycles by current code creating display settings that
-   // are over-written later.
 
    @Override
    public DisplayWindow createDisplay(DataProvider provider,
                                       DisplayWindowControlsFactory factory) {
       DisplayWindow ret = new DisplayController.Builder(provider)
             .linkManager(linkManager_).controlsFactory(factory).build(studio_);
+      addViewer(ret);
+      ret.show();
+      return ret;
+   }
+
+   /**
+    * Preferred version of createDisplay.  This allows the caller to include
+    * initial display settings that can be used during display creation
+    * (currently to place the window), but also reduces CPU cycles since
+    * the called code will not need to construct a default set of display setting.
+    *
+    * @param provider The DataProvider to use for this display
+    * @param factory  The DisplayWindowControlsFactory to use for this display
+    * @return The created DisplayWindow
+    */
+   @Override
+   public DisplayWindow createDisplay(DataProvider provider,
+                                      DisplayWindowControlsFactory factory,
+                                      DisplaySettings displaySettings) {
+      DisplayWindow ret = new DisplayController.Builder(provider)
+               .linkManager(linkManager_)
+               .controlsFactory(factory)
+               .displaySettings(displaySettings)
+               .build(studio_);
       addViewer(ret);
       ret.show();
       return ret;

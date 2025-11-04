@@ -113,6 +113,13 @@ public final class DisplayController extends DisplayWindowAPIAdapter
    // Must access on EDT
    private DisplayUIController uiController_;
 
+   // The key for the display profile. This is used to save
+   // display settings for this display window.
+   private String profileKey_ = "DefaultDisplayProfile";
+   // The key for the display window. This is used to save
+   // the display window's position and size.
+   private String windowKey_ = "DefaultDisplayWindow";
+
    private final Object selectionLock_ = new Object();
    private BoundsRectAndMask selection_ = BoundsRectAndMask.unselected();
 
@@ -200,6 +207,11 @@ public final class DisplayController extends DisplayWindowAPIAdapter
 
       public Builder controlsFactory(DisplayWindowControlsFactory factory) {
          controlsFactory_ = factory;
+         return this;
+      }
+
+      public Builder displaySettings(DisplaySettings displaySettings) {
+         displaySettings_ = displaySettings;
          return this;
       }
 
@@ -541,6 +553,7 @@ public final class DisplayController extends DisplayWindowAPIAdapter
             }
 
             uiController_.applyDisplaySettings(adjustedSettings);
+            ((DefaultDisplaySettings) adjustedSettings).saveToProfile(profileKey_);
          }
       });
       return adjustedSettings;
@@ -1183,7 +1196,12 @@ public final class DisplayController extends DisplayWindowAPIAdapter
          for (String axis : dataProvider_.getAxes()) {
             cb.index(axis, dataProvider_.getNextIndex(axis) - 1);
          }
-         uiController_.expandDisplayedRangeToInclude(cb.build());
+         SwingUtilities.invokeLater(() -> {
+            // uiController_ may have become null in the meantime
+            if (uiController_ != null) {
+               uiController_.expandDisplayedRangeToInclude(cb.build());
+            }
+         });
       }
    }
 
@@ -1268,6 +1286,33 @@ public final class DisplayController extends DisplayWindowAPIAdapter
       // TODO: evaulate if this is as intended
       if (dataProvider_ instanceof Datastore) {
          ((Datastore) dataProvider_).setName(title);
+      }
+   }
+
+   /**
+    * Set the key used to save and restore display settings to the
+    * user profile for this display.
+    *
+    * @param key String to use as the key for saving and restoring
+    */
+   @Override
+   public void setDisplaySettingsProfileKey(String key) {
+      profileKey_ = key;
+   }
+
+   /**
+    * Sets a key that will be used to remember Window position in the profile.
+    *
+    * @param key Key to use for positioning the DisplayWindow.
+    *            if called before showing the DisplayWindow,
+    *            the DisplayWindow will be positioned at the
+    *            remembered position.
+    */
+   @Override
+   public void setWindowPositionKey(String key) {
+      windowKey_ = key;
+      if (uiController_ != null) {
+         uiController_.setWindowPositioning(key);
       }
    }
 
