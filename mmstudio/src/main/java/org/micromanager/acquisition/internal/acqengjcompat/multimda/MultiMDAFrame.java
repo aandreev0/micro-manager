@@ -64,6 +64,7 @@ public class MultiMDAFrame extends JFrame {
    private final Studio studio_;
    private final JPanel acqPanel_;
    private final List<MDASettingData> acqs_ = new ArrayList<>();
+   private List<Integer> acqsOrdering_ = new ArrayList<>();
    private final List<JLabel> acqLabels_ = new ArrayList<>();
    private final List<JLabel> acqExplanations_ = new ArrayList<>();
    private final List<JComboBox<String>> presetCombos_ = new ArrayList<>();

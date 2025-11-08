@@ -136,7 +136,8 @@ public class MultiAcqEngJAdapter extends AcqEngJAdapter {
     * @return Datastores corresponding to sequenceSettings
     */
    public List<Datastore> runAcquisition(SequenceSettings basicSettings,
-                                         List<MDASettingData> acqs) {
+                                         List<MDASettingData> acqs,
+                                         List<Integer> acqsOrdering) {
       List<SequenceSettings> sequenceSettings = new ArrayList<>(acqs.size());
       List<PositionList> positionLists = new ArrayList<>(acqs.size());
 
@@ -281,16 +282,19 @@ public class MultiAcqEngJAdapter extends AcqEngJAdapter {
          }
          for (int t = 0; t < nrFrames; t++) {
             for (int i = 0; i < sequenceSettings.size(); i++) {
-               Iterator<AcquisitionEvent> presetEvent = createPresetEvent(acqs.get(i));
-               if (presetEvent != null) {
-                  currentMultiMDA_.submitEventIterator(presetEvent);
+               // if list of orderings is empty, default to running all settings at all timepoints
+               if(acqsOrdering.isEmpty() || acqsOrdering.get(t) == i){
+                  Iterator<AcquisitionEvent> presetEvent = createPresetEvent(acqs.get(i));
+                  if (presetEvent != null) {
+                     currentMultiMDA_.submitEventIterator(presetEvent);
+                  }
+                  currentMultiMDA_.submitEventIterator(createAcqEventIterator(
+                        sequenceSettings.get(i),
+                        positionLists.get(i),
+                        i,
+                        t,
+                        (long) (t * timeLapseSettings_.intervalMs())));
                }
-               currentMultiMDA_.submitEventIterator(createAcqEventIterator(
-                     sequenceSettings.get(i),
-                     positionLists.get(i),
-                     i,
-                     t,
-                     (long) (t * timeLapseSettings_.intervalMs())));
             }
          }
          currentMultiMDA_.finish();
