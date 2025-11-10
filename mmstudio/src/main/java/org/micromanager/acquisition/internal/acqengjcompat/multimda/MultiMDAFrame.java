@@ -68,6 +68,7 @@ public class MultiMDAFrame extends JFrame {
    private final List<MDASettingData> acqs_ = new ArrayList<>();
    private List<Integer> acqsOrdering_ = new ArrayList<>();
    private JTextField acqsOrderingString_;
+   private JTextField commonRoot_;
    private final List<JLabel> acqLabels_ = new ArrayList<>();
    private final List<JLabel> acqExplanations_ = new ArrayList<>();
    private final List<JComboBox<String>> presetCombos_ = new ArrayList<>();
@@ -160,6 +161,9 @@ public class MultiMDAFrame extends JFrame {
       acqsOrderingString_ = new JTextField(40);
 
       super.add(acqsOrderingString_,"gapx 10, gapy 5, wrap");
+      super.add(new JLabel("Common root directory:"),"gapx 10, gapy 5, wrap");
+      commonRoot_ = new JTextField(80);
+      super.add(commonRoot_,"gapx 10, gapy 5, wrap");
 
       // Reload settings from disk, it would be nicer to auto-update whenever a file changes,
       // but that needs monitoring the file...
@@ -177,11 +181,17 @@ public class MultiMDAFrame extends JFrame {
             if (seqSb != null) {
                acqs_.get(i).setAcqSettings(f, seqSb);
             }
+            // update settings to include common root:
+            SequenceSettings.Builder sb = new SequenceSettings.Builder(acqs_.get(i).getSequenceSettings());
+            sb.root(commonRoot_.getText());
+            acqs_.get(i).setAcqSettings(f, sb.build());
             File positionListFile = acqs_.get(i).getPositionListFile();
             if (positionListFile != null) {
                acqs_.get(i).setPositionListFile(positionListFile);
             }
             acqExplanations_.get(i).setText(oneLineSummary(acqs_.get(i)));
+            studio_.logs().logError("Reloading acq with root = " + acqs_.get(i).getSequenceSettings().root());
+            commonRoot_.setText(acqs_.get(i).getSequenceSettings().root()); 
          }
          super.pack();
       });
@@ -213,6 +223,8 @@ public class MultiMDAFrame extends JFrame {
                                     interval_.getText()) * multiplier);
                   sb.useAutofocus(autoFocusPanel_.isSelected())
                         .skipAutofocusCount((Integer) afSkipInterval_.getValue());
+                  sb.root(commonRoot_.getText());
+                  studio_.logs().logError("Will use common root = " + commonRoot_.getText());
                } catch (ParseException ex) {
                   studio_.logs().logError(ex);
                }
@@ -223,10 +235,14 @@ public class MultiMDAFrame extends JFrame {
                   
                }else{
                   // turn string into list
+                  try{
                   acqsOrdering_ = Arrays.stream(acqsOrderingString_.getText().split(","))
                                        .map(String::trim)          // remove any spaces
                                        .map(Integer::parseInt)     // convert each string to integer
                                        .collect(Collectors.toList());
+                  }catch (NumberFormatException ex){
+                     ReportingUtils.showMessage("Failed to parse ordering, should be `0,1,2,3,3,3,3` or similar");
+                  }
 
                }
                acqj.runAcquisition(baseSettings, acqs_, acqsOrdering_);
@@ -561,7 +577,7 @@ public class MultiMDAFrame extends JFrame {
          sb.append("Positions: current only.");
       }
       if (mdaSettingData.getSequenceSettings().save()) {
-         sb.append(" Saving as prefix="+mdaSettingData.getSequenceSettings().prefix());
+         sb.append("\n Saving as root="+mdaSettingData.getSequenceSettings().root()+"\n Prefix="+mdaSettingData.getSequenceSettings().prefix());
       } else {
          sb.append(" Not saving.");
       }
