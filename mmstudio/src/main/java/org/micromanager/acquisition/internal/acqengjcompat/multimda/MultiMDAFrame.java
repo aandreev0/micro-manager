@@ -31,6 +31,8 @@ import java.text.NumberFormat;
 import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.*;
+import java.util.Arrays;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
@@ -65,6 +67,7 @@ public class MultiMDAFrame extends JFrame {
    private final JPanel acqPanel_;
    private final List<MDASettingData> acqs_ = new ArrayList<>();
    private List<Integer> acqsOrdering_ = new ArrayList<>();
+   private JTextField acqsOrderingString_;
    private final List<JLabel> acqLabels_ = new ArrayList<>();
    private final List<JLabel> acqExplanations_ = new ArrayList<>();
    private final List<JComboBox<String>> presetCombos_ = new ArrayList<>();
@@ -153,6 +156,11 @@ public class MultiMDAFrame extends JFrame {
 
       super.add(acqPanel_, "gapx 10, gapy 5, wrap");
 
+      super.add(new JLabel("Acquisition Time Order, e.g. 0,1,2 (Number of time points need to match number of elements in order; leave empty to run default: all settings at all time points)"),"gapx 10, gapy 5, wrap");
+      acqsOrderingString_ = new JTextField(40);
+
+      super.add(acqsOrderingString_,"gapx 10, gapy 5, wrap");
+
       // Reload settings from disk, it would be nicer to auto-update whenever a file changes,
       // but that needs monitoring the file...
       JButton refreshButton = new JButton("Reload Settings");
@@ -209,7 +217,19 @@ public class MultiMDAFrame extends JFrame {
                   studio_.logs().logError(ex);
                }
                SequenceSettings baseSettings = sb.build();
-               acqj.runAcquisition(baseSettings, acqs_);
+               studio_.logs().logError("acqsOrderingString_=" + acqsOrderingString_.getText() + ";");
+               if(acqsOrderingString_.getText().equals("")){
+                  // default is running all settings at all time points
+                  
+               }else{
+                  // turn string into list
+                  acqsOrdering_ = Arrays.stream(acqsOrderingString_.getText().split(","))
+                                       .map(String::trim)          // remove any spaces
+                                       .map(Integer::parseInt)     // convert each string to integer
+                                       .collect(Collectors.toList());
+
+               }
+               acqj.runAcquisition(baseSettings, acqs_, acqsOrdering_);
             }
          });
          acqThread.start();
@@ -273,6 +293,7 @@ public class MultiMDAFrame extends JFrame {
       acqPanel_.removeAll();
       acqLabels_.clear();
       // add headers to the table
+      acqPanel_.add(new JLabel("Acq Settings #"), "alignx center");
       acqPanel_.add(new JLabel("Acquisition Settings File"), "span 2, alignx center");
       acqPanel_.add(new JLabel("Preset"), "alignx center");
       acqPanel_.add(new JLabel("Position List File"), "span 2, alignx center");
@@ -297,6 +318,8 @@ public class MultiMDAFrame extends JFrame {
          }
          JLabelC label = new JLabelC(acqs_.get(i).getAcqSettingFile().getName());
          acqLabels_.add(i, label);
+         acqPanel_.add(new JLabel(Integer.toString(i)), "alignx center");
+
          acqPanel_.add(acqLabels_.get(i));
 
          JButton selectAcqFile = new JButton("...");
@@ -538,7 +561,7 @@ public class MultiMDAFrame extends JFrame {
          sb.append("Positions: current only.");
       }
       if (mdaSettingData.getSequenceSettings().save()) {
-         sb.append(" Saving.");
+         sb.append(" Saving as prefix="+mdaSettingData.getSequenceSettings().prefix());
       } else {
          sb.append(" Not saving.");
       }
