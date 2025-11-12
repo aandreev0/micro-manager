@@ -68,6 +68,7 @@ public class MultiMDAFrame extends JFrame {
    private final List<MDASettingData> acqs_ = new ArrayList<>();
    private List<Integer> acqsOrdering_ = new ArrayList<>();
    private JTextField acqsOrderingString_;
+   private JLabel acqsOrderingNum_ = new JLabel("...");
    private JTextField commonRoot_;
    private final List<JLabel> acqLabels_ = new ArrayList<>();
    private final List<JLabel> acqExplanations_ = new ArrayList<>();
@@ -159,8 +160,10 @@ public class MultiMDAFrame extends JFrame {
 
       super.add(new JLabel("Acquisition Time Order, e.g. 0,1,2 (Number of time points need to match number of elements in order; leave empty to run default: all settings at all time points)"),"gapx 10, gapy 5, wrap");
       acqsOrderingString_ = new JTextField(40);
+      
+      super.add(acqsOrderingString_, "gapx 10, align left");
+      super.add(acqsOrderingNum_,"push, align left, gapx 1, gapy 5, wrap");
 
-      super.add(acqsOrderingString_,"gapx 10, gapy 5, wrap");
       super.add(new JLabel("Common root directory:"),"gapx 10, gapy 5, wrap");
       commonRoot_ = new JTextField(80);
       super.add(commonRoot_,"gapx 10, gapy 5, wrap");
@@ -184,7 +187,9 @@ public class MultiMDAFrame extends JFrame {
             // update settings to include common root:
             SequenceSettings.Builder sb = new SequenceSettings.Builder(acqs_.get(i).getSequenceSettings());
             sb.root(commonRoot_.getText());
+            sb.prefix(acqs_.get(i).getPositionListFile().getName());
             acqs_.get(i).setAcqSettings(f, sb.build());
+
             File positionListFile = acqs_.get(i).getPositionListFile();
             if (positionListFile != null) {
                acqs_.get(i).setPositionListFile(positionListFile);
@@ -193,6 +198,8 @@ public class MultiMDAFrame extends JFrame {
             studio_.logs().logError("Reloading acq with root = " + acqs_.get(i).getSequenceSettings().root());
             commonRoot_.setText(acqs_.get(i).getSequenceSettings().root()); 
          }
+         // update label for number of elements in Orderings
+         acqsOrderingNum_.setText( String.valueOf(acqsOrderingString_.getText().split(",").length) );
          super.pack();
       });
       super.add(refreshButton, "span, split 3, align left, gapx 10, gapy 5");
